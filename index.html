@@ -1,0 +1,591 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gourmet</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@1&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  body { font-family: 'Barlow', sans-serif; background: #000; color: #fff; margin: 0; }
+  .serif { font-family: 'Instrument Serif', serif; font-style: italic; }
+  .glass { background: rgba(255,255,255,.05); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,.15); }
+  input, textarea, select { color: #000; background: #fff; border-radius: 10px; padding: 8px 10px; width: 100%; box-sizing: border-box; font-size: 14px; }
+  label { display: block; font-size: 12px; color: rgba(255,255,255,.7); margin: 10px 0 4px; }
+  .btn { background: #fff; color: #000; border-radius: 999px; padding: 10px 18px; font-weight: 600; cursor: pointer; border: none; white-space: nowrap; }
+  .btn2 { background: rgba(255,255,255,.1); color: #fff; border-radius: 999px; padding: 8px 14px; cursor: pointer; border: 1px solid rgba(255,255,255,.2); white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="modal"></div>
+
+<script>
+const SB_URL = 'https://dovacwxtjtcfryfpzhuz.supabase.co';
+const SB_KEY = 'sb_publishable_PkC6dCo7NMYLW3GmMRL45Q_-tzzpmBv';
+const ADMIN_EMAIL = 'consultoria.deoclides.junior@gmail.com';
+const sb = supabase.createClient(SB_URL, SB_KEY);
+
+const CONFIG_PADRAO = {
+  titulo: 'Gourmet',
+  logo: '',
+  fraseEsq: 'Bolos caseiros feitos sob encomenda, com ingredientes frescos.',
+  fraseDir: 'Escolha seu sabor e receba um bolo feito com carinho.',
+  fundo: 'bolo-floresta.mp4',
+  abas: ['Bolos', 'Tortas', 'Sem açúcar', 'Sob encomenda'],
+  whatsapp: '5547999999999',
+  taxaMaquininha: 3,
+  pix: ''
+};
+
+let config = { ...CONFIG_PADRAO };
+let produtos = [];
+let carrinho = [];
+let sessao = null;
+let adminTab = 'pedidos';
+let prodEditando = null;
+let canal = null;
+
+const $ = id => document.getElementById(id);
+const tira = s => String(s ?? '').trim();
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = v => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
+const novoId = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const subtotal = () => carrinho.reduce((s, i) => s + i.preco * i.qtd, 0);
+const qtdCarrinho = () => carrinho.reduce((s, i) => s + i.qtd, 0);
+
+/* ---------- dados ---------- */
+async function carregarDados() {
+  const { data, error } = await sb.from('gourmet_data').select('key,value');
+  if (error) { console.warn(error); return; }
+  (data || []).forEach(r => {
+    if (r.key === 'config') config = { ...CONFIG_PADRAO, ...r.value };
+    if (r.key === 'produtos') produtos = Array.isArray(r.value) ? r.value : [];
+  });
+}
+
+async function gravar(key, value) {
+  const { error } = await sb.from('gourmet_data')
+    .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+  if (error) throw error;
+}
+
+/* ---------- rotas ---------- */
+function render() {
+  if (location.hash === '#admin') renderAdmin();
+  else renderSite();
+}
+window.addEventListener('hashchange', render);
+
+async function iniciar() {
+  await carregarDados();
+  const { data } = await sb.auth.getSession();
+  sessao = data.session;
+  if (sessao && sessao.user.email !== ADMIN_EMAIL) {
+    await sb.auth.signOut();
+    sessao = null;
+  }
+  render();
+}
+
+/* ---------- site ---------- */
+function fundoHTML() {
+  const f = config.fundo || '';
+  if (!f) return '';
+  if (f.toLowerCase().endsWith('.mp4'))
+    return `<video autoplay muted loop playsinline class="absolute inset-0 w-full h-full object-cover" src="${esc(f)}"></video>`;
+  return `<img src="${esc(f)}" class="absolute inset-0 w-full h-full object-cover">`;
+}
+
+function renderSite() {
+  $('app').innerHTML = `
+  <div class="relative min-h-screen overflow-hidden">
+    ${fundoHTML()}
+    <div class="absolute inset-0 bg-black/50"></div>
+
+    <nav class="fixed top-4 left-1/2 -translate-x-1/2 z-50 glass rounded-full px-4 py-2 flex items-center gap-4 text-sm max-w-[94vw] overflow-x-auto whitespace-nowrap">
+      <span class="font-semibold">${esc(config.titulo)}</span>
+      ${config.abas.map(c => `<button class="text-white/70 hover:text-white" data-act="catalogo" data-val="${esc(c)}">${esc(c)}</button>`).join('')}
+      <button class="btn" data-act="carrinho">Carrinho (${qtdCarrinho()})</button>
+    </nav>
+
+    <div class="relative z-10 min-h-screen flex items-center justify-center px-4 text-center">
+      ${config.logo
+        ? `<img src="${esc(config.logo)}" class="max-h-40 max-w-[80vw]">`
+        : `<h1 class="serif text-6xl md:text-9xl leading-none">${esc(config.titulo)}</h1>`}
+    </div>
+
+    <p class="absolute bottom-10 left-6 max-w-[220px] text-sm text-white/80 z-10">${esc(config.fraseEsq)}</p>
+    <p class="absolute bottom-10 right-6 max-w-[220px] text-right text-sm text-white/80 z-10">${esc(config.fraseDir)}</p>
+
+    <div class="absolute bottom-10 left-1/2 -translate-x-1/2 z-10">
+      <button class="btn" data-act="catalogo">Comprar agora</button>
+    </div>
+  </div>`;
+}
+
+/* ---------- modal ---------- */
+function modal(html) {
+  $('modal').innerHTML = `
+    <div class="fixed inset-0 z-[60] bg-black/85 overflow-y-auto p-4" onclick="if(event.target===this)fecharModal()">
+      <div class="glass bg-zinc-950 max-w-lg mx-auto mt-10 rounded-2xl p-6">${html}</div>
+    </div>`;
+}
+function fecharModal() { $('modal').innerHTML = ''; }
+
+/* ---------- catálogo e carrinho ---------- */
+function abrirCatalogo(cat) {
+  const catAtiva = cat || null;
+  const lista = produtos.filter(p => p.ativo !== false && (!catAtiva || p.categoria === catAtiva));
+  const tabs = ['Todos', ...config.abas];
+  modal(`
+    <div class="flex justify-between items-center mb-4 gap-2">
+      <h2 class="serif text-3xl">Catálogo</h2>
+      <button class="btn2" data-act="carrinho">Carrinho (${qtdCarrinho()})</button>
+    </div>
+    <div class="flex gap-2 overflow-x-auto pb-2 mb-4">
+      ${tabs.map(c => {
+        const ativo = (c === 'Todos' && !catAtiva) || c === catAtiva;
+        return `<button class="${ativo ? 'btn' : 'btn2'} whitespace-nowrap" data-act="catalogo" data-val="${c === 'Todos' ? '' : esc(c)}">${esc(c)}</button>`;
+      }).join('')}
+    </div>
+    <div class="grid grid-cols-2 gap-4">
+      ${lista.length ? lista.map(p => `
+        <button class="text-left glass rounded-xl overflow-hidden" data-act="ver" data-id="${esc(p.id)}">
+          ${p.foto ? `<img src="${esc(p.foto)}" class="w-full h-32 object-cover">` : '<div class="h-32 bg-white/10"></div>'}
+          <div class="p-3"><p class="font-medium">${esc(p.nome)}</p><p class="text-white/70 text-sm">${fmt(p.preco)}</p></div>
+        </button>`).join('')
+        : '<p class="text-white/60 col-span-2">Nenhum produto nesta categoria ainda.</p>'}
+    </div>`);
+}
+
+function verProduto(id) {
+  const p = produtos.find(x => x.id === id);
+  if (!p) return;
+  modal(`
+    ${p.foto ? `<img src="${esc(p.foto)}" class="w-full h-64 object-cover rounded-xl mb-4">` : ''}
+    <h2 class="serif text-3xl">${esc(p.nome)}</h2>
+    <p class="text-white/70 mt-2">${esc(p.descricao)}</p>
+    <p class="text-2xl font-semibold mt-4">${fmt(p.preco)}</p>
+    <label>Quantidade</label>
+    <input id="qtd-prod" type="number" min="1" value="1">
+    <div class="flex gap-3 mt-5 flex-wrap">
+      <button class="btn" data-act="add" data-id="${esc(p.id)}">Adicionar ao pedido</button>
+      <button class="btn2" data-act="catalogo">Voltar</button>
+    </div>`);
+}
+
+function addCarrinho(id, qtd) {
+  const p = produtos.find(x => x.id === id);
+  if (!p) return;
+  const q = Math.max(1, qtd || 1);
+  const item = carrinho.find(i => i.id === id);
+  if (item) item.qtd += q;
+  else carrinho.push({ id: p.id, nome: p.nome, preco: Number(p.preco) || 0, qtd: q });
+  abrirCarrinho();
+}
+
+function alterarQtd(id, delta) {
+  const item = carrinho.find(i => i.id === id);
+  if (item) item.qtd = Math.max(1, item.qtd + delta);
+  abrirCarrinho();
+}
+
+function abrirCarrinho() {
+  if (!carrinho.length) {
+    modal(`
+      <h2 class="serif text-3xl mb-4">Carrinho</h2>
+      <p class="text-white/70">Seu carrinho está vazio.</p>
+      <button class="btn2 mt-4" data-act="catalogo">Ver catálogo</button>`);
+    return;
+  }
+  modal(`
+    <h2 class="serif text-3xl mb-4">Seu pedido</h2>
+    ${carrinho.map(i => `
+      <div class="flex justify-between items-center py-3 border-b border-white/10 gap-2">
+        <div class="flex-1"><p>${esc(i.nome)}</p><p class="text-white/60 text-sm">${fmt(i.preco)} cada</p></div>
+        <div class="flex items-center gap-2">
+          <button class="btn2" data-act="qtd" data-id="${esc(i.id)}" data-val="-1">-</button>
+          <span>${i.qtd}</span>
+          <button class="btn2" data-act="qtd" data-id="${esc(i.id)}" data-val="1">+</button>
+        </div>
+        <button class="text-red-400 text-sm" data-act="remover" data-id="${esc(i.id)}">remover</button>
+      </div>`).join('')}
+    <p class="flex justify-between text-lg font-semibold mt-4"><span>Subtotal</span><span>${fmt(subtotal())}</span></p>
+    <div class="flex gap-3 mt-5 flex-wrap">
+      <button class="btn" data-act="checkout">Finalizar pedido</button>
+      <button class="btn2" data-act="catalogo">Continuar comprando</button>
+    </div>`);
+}
+
+function abrirCheckout() {
+  modal(`
+    <h2 class="serif text-3xl mb-4">Finalizar pedido</h2>
+    <label>Seu nome</label>
+    <input id="c-nome">
+    <label>WhatsApp (com DDD)</label>
+    <input id="c-whats" inputmode="tel">
+    <label>Endereço de entrega</label>
+    <textarea id="c-end" rows="2"></textarea>
+    <label>Forma de pagamento (pago na entrega)</label>
+    <select id="c-pag" onchange="$('c-troco-wrap').style.display = this.value === 'dinheiro' ? 'block' : 'none'">
+      <option value="pix">PIX</option>
+      <option value="cartao">Cartão (maquininha, +${fmt(config.taxaMaquininha)})</option>
+      <option value="dinheiro">Dinheiro</option>
+    </select>
+    <div id="c-troco-wrap" style="display:none">
+      <label>Precisa de troco? Para quanto?</label>
+      <input id="c-troco" inputmode="decimal" placeholder="Ex: 50,00">
+    </div>
+    ${config.pix ? `<p class="text-sm text-white/70 mt-3">Chave PIX: ${esc(config.pix)}</p>` : ''}
+    <p class="text-white/70 mt-4">Subtotal: ${fmt(subtotal())}</p>
+    <div class="flex gap-3 mt-4 flex-wrap">
+      <button class="btn" data-act="confirmar">Confirmar pedido</button>
+      <button class="btn2" data-act="carrinho">Voltar</button>
+    </div>`);
+}
+
+async function confirmarPedido() {
+  const nome = tira($('c-nome').value);
+  const whats = tira($('c-whats').value).replace(/\D/g, '');
+  const end = tira($('c-end').value);
+  const pag = $('c-pag').value;
+  const trocoTxt = tira($('c-troco')?.value);
+
+  if (!nome || !whats || !end) { alert('Preencha nome, WhatsApp e endereço.'); return; }
+  if (!carrinho.length) { alert('Seu carrinho está vazio.'); return; }
+
+  const taxa = pag === 'cartao' ? (Number(config.taxaMaquininha) || 0) : 0;
+  const total = subtotal() + taxa;
+  const t = Number(trocoTxt.replace(',', '.'));
+  const troco = pag === 'dinheiro' && t > 0 ? t : null;
+  const rotulo = { pix: 'PIX na entrega', cartao: 'Cartão na entrega', dinheiro: 'Dinheiro na entrega' }[pag];
+  const itens = carrinho.map(i => `${i.qtd}x ${i.nome} (${fmt(i.preco * i.qtd)})`);
+
+  const win = window.open('', '_blank');
+  const { error } = await sb.from('gourmet_pedidos').insert({
+    cliente_nome: nome, whatsapp: whats, endereco: end, itens,
+    total, forma_pagamento: rotulo, troco
+  });
+
+  if (error) {
+    if (win) win.close();
+    console.error(error);
+    alert('Erro ao enviar o pedido. Tente novamente.');
+    return;
+  }
+
+  let msg = '*Novo pedido*\n\n' + itens.join('\n') + '\n\nSubtotal: ' + fmt(subtotal());
+  if (taxa) msg += '\nTaxa da maquininha: ' + fmt(taxa);
+  msg += '\n*Total: ' + fmt(total) + '*\n\nCliente: ' + nome + '\nWhatsApp: ' + whats + '\nEndereço: ' + end + '\nPagamento: ' + rotulo;
+  if (troco) msg += '\nTroco para: ' + fmt(troco);
+
+  const url = 'https://wa.me/' + config.whatsapp + '?text=' + encodeURIComponent(msg);
+  if (win) win.location.href = url; else location.href = url;
+
+  carrinho = [];
+  modal(`
+    <h2 class="serif text-3xl mb-2">Pedido enviado!</h2>
+    <p class="text-white/70">Confirme o envio da mensagem no WhatsApp para a loja. Obrigado!</p>
+    <button class="btn mt-5" data-act="fechar">Fechar</button>`);
+}
+
+/* ---------- admin: login ---------- */
+async function entrar() {
+  const { data, error } = await sb.auth.signInWithPassword({
+    email: tira($('l-email').value),
+    password: $('l-senha').value
+  });
+  if (error || data.user?.email !== ADMIN_EMAIL) {
+    await sb.auth.signOut();
+    $('l-erro').textContent = 'E-mail ou senha incorretos.';
+    return;
+  }
+  sessao = data.session;
+  renderAdmin();
+}
+
+/* ---------- admin: tela ---------- */
+async function renderAdmin() {
+  if (!sessao) {
+    $('app').innerHTML = `
+    <div class="min-h-screen flex items-center justify-center p-6">
+      <div class="glass rounded-2xl p-6 w-full max-w-sm">
+        <h1 class="serif text-3xl mb-2">Admin</h1>
+        <label>E-mail</label>
+        <input id="l-email" type="email">
+        <label>Senha</label>
+        <input id="l-senha" type="password">
+        <button class="btn w-full mt-5" data-act="login">Entrar</button>
+        <p id="l-erro" class="text-red-400 text-sm mt-3"></p>
+      </div>
+    </div>`;
+    return;
+  }
+
+  const abas = [['pedidos', 'Pedidos'], ['aparencia', 'Aparência'], ['produtos', 'Produtos']];
+  $('app').innerHTML = `
+  <div class="min-h-screen p-5 max-w-3xl mx-auto">
+    <div class="flex justify-between items-center mb-5 flex-wrap gap-3">
+      <h1 class="serif text-4xl">Painel</h1>
+      <div class="flex gap-2 flex-wrap">
+        ${abas.map(([k, n]) => `<button class="${adminTab === k ? 'btn' : 'btn2'}" data-act="admin-tab" data-val="${k}">${n}</button>`).join('')}
+        <button class="btn2" data-act="sair">Sair</button>
+        <button class="btn2" onclick="location.hash=''">Ver site</button>
+      </div>
+    </div>
+    <div id="admin-conteudo"></div>
+  </div>`;
+
+  if (adminTab === 'pedidos') await renderPedidos();
+  if (adminTab === 'aparencia') renderAparencia();
+  if (adminTab === 'produtos') renderProdutos();
+}
+
+/* ---------- admin: pedidos ---------- */
+async function renderPedidos() {
+  $('admin-conteudo').innerHTML = `
+    <div class="glass rounded-2xl p-5">
+      <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
+        <h2 class="text-xl font-semibold">Pedidos recebidos</h2>
+        <button class="btn2" data-act="notif">Ativar notificações</button>
+      </div>
+      <div id="lista-pedidos" class="space-y-3"><p class="text-white/60">Carregando...</p></div>
+    </div>`;
+
+  const { data, error } = await sb.from('gourmet_pedidos')
+    .select('*').order('created_at', { ascending: false }).limit(100);
+
+  if (error) {
+    $('lista-pedidos').innerHTML = `<p class="text-red-400">Erro ao carregar: ${esc(error.message)}</p>`;
+    return;
+  }
+
+  $('lista-pedidos').innerHTML = data.length ? data.map(p => `
+    <div class="border border-white/15 rounded-xl p-4">
+      <div class="flex justify-between flex-wrap gap-2">
+        <p class="font-semibold">${esc(p.cliente_nome)} · ${esc(p.whatsapp)}</p>
+        <p class="text-sm text-white/60">${new Date(p.created_at).toLocaleString('pt-BR')}</p>
+      </div>
+      <p class="text-sm text-white/80 mt-1">${esc(p.endereco)}</p>
+      <ul class="text-sm mt-2 list-disc list-inside">${(p.itens || []).map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+      <p class="mt-2">Total: <b>${fmt(p.total)}</b> · ${esc(p.forma_pagamento)}${p.troco ? ' · troco para ' + fmt(p.troco) : ''}</p>
+      <div class="flex gap-2 mt-3 flex-wrap">
+        ${['novo', 'preparando', 'entregue', 'cancelado'].map(s =>
+          `<button class="${p.status === s ? 'btn' : 'btn2'}" data-act="status" data-id="${esc(p.id)}" data-val="${s}">${s}</button>`
+        ).join('')}
+      </div>
+    </div>`).join('') : '<p class="text-white/60">Nenhum pedido ainda.</p>';
+
+  ligarTempoReal();
+}
+
+async function mudarStatus(id, status) {
+  const { error } = await sb.from('gourmet_pedidos').update({ status }).eq('id', id);
+  if (error) alert(error.message);
+  renderPedidos();
+}
+
+function ligarTempoReal() {
+  if (canal) return;
+  canal = sb.channel('gourmet-pedidos')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'gourmet_pedidos' }, payload => {
+      tocar();
+      if (window.Notification && Notification.permission === 'granted') {
+        new Notification('Novo pedido', { body: payload.new.cliente_nome + ' · ' + fmt(payload.new.total) });
+      }
+      if (adminTab === 'pedidos' && sessao) renderPedidos();
+    })
+    .subscribe();
+}
+
+function tocar() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.frequency.value = 880; g.gain.value = 0.2;
+    o.start(); o.stop(ctx.currentTime + 0.4);
+  } catch (e) {}
+}
+
+function ativarNotificacoes() {
+  if (!window.Notification) { alert('Seu navegador não suporta notificações.'); return; }
+  Notification.requestPermission().then(r =>
+    alert(r === 'granted' ? 'Notificações ativadas.' : 'Permissão negada no navegador.'));
+}
+
+/* ---------- admin: aparência ---------- */
+function renderAparencia() {
+  $('admin-conteudo').innerHTML = `
+  <div class="glass rounded-2xl p-5">
+    <label>Nome da loja (aparece no lugar do título)</label>
+    <input id="a-titulo" value="${esc(config.titulo)}">
+    <label>URL da logo (opcional; se preenchida, substitui o nome grande)</label>
+    <input id="a-logo" value="${esc(config.logo)}">
+    <label>Frase do canto esquerdo</label>
+    <textarea id="a-esq" rows="2">${esc(config.fraseEsq)}</textarea>
+    <label>Frase do canto direito</label>
+    <textarea id="a-dir" rows="2">${esc(config.fraseDir)}</textarea>
+    <label>Fundo: arquivo de vídeo (ex: bolo-floresta.mp4) ou URL de imagem</label>
+    <input id="a-fundo" value="${esc(config.fundo)}">
+    <label>Abas do menu (separe por vírgula)</label>
+    <input id="a-abas" value="${esc(config.abas.join(', '))}">
+    <label>WhatsApp da loja (55 + DDD + número)</label>
+    <input id="a-whats" value="${esc(config.whatsapp)}">
+    <label>Taxa da maquininha para cartão (R$)</label>
+    <input id="a-taxa" type="number" step="0.01" value="${esc(config.taxaMaquininha)}">
+    <label>Chave PIX (mostrada ao cliente)</label>
+    <input id="a-pix" value="${esc(config.pix)}">
+    <button class="btn mt-6" data-act="config-salvar">Salvar aparência</button>
+  </div>`;
+}
+
+async function salvarConfig() {
+  const nova = {
+    ...config,
+    titulo: tira($('a-titulo').value) || 'Gourmet',
+    logo: tira($('a-logo').value),
+    fraseEsq: $('a-esq').value,
+    fraseDir: $('a-dir').value,
+    fundo: tira($('a-fundo').value),
+    abas: $('a-abas').value.split(',').map(s => s.trim()).filter(Boolean),
+    whatsapp: tira($('a-whats').value).replace(/\D/g, ''),
+    taxaMaquininha: Number($('a-taxa').value) || 0,
+    pix: tira($('a-pix').value)
+  };
+  try {
+    await gravar('config', nova);
+    config = nova;
+    alert('Aparência salva.');
+  } catch (e) {
+    alert('Erro ao salvar: ' + e.message);
+  }
+}
+
+/* ---------- admin: produtos ---------- */
+function renderProdutos() {
+  const form = prodEditando ? formProduto(prodEditando) : '';
+  $('admin-conteudo').innerHTML = `
+    ${form}
+    <div class="glass rounded-2xl p-5 mt-4">
+      <div class="flex justify-between items-center mb-3">
+        <h2 class="text-xl font-semibold">Produtos</h2>
+        ${prodEditando ? '' : '<button class="btn" data-act="prod-novo">Novo produto</button>'}
+      </div>
+      <div class="space-y-3">
+        ${produtos.length ? produtos.map(p => `
+          <div class="flex items-center gap-3 border border-white/15 rounded-xl p-3">
+            ${p.foto ? `<img src="${esc(p.foto)}" class="w-16 h-16 object-cover rounded-lg">` : '<div class="w-16 h-16 bg-white/10 rounded-lg"></div>'}
+            <div class="flex-1">
+              <p class="font-medium">${esc(p.nome)} ${p.ativo === false ? '<span class="text-yellow-400 text-xs">(pausado)</span>' : ''}</p>
+              <p class="text-sm text-white/60">${esc(p.categoria)} · ${fmt(p.preco)}</p>
+            </div>
+            <button class="btn2" data-act="prod-ativo" data-id="${esc(p.id)}">${p.ativo === false ? 'Ativar' : 'Pausar'}</button>
+            <button class="btn2" data-act="prod-editar" data-id="${esc(p.id)}">Editar</button>
+            <button class="btn2" data-act="prod-excluir" data-id="${esc(p.id)}">Excluir</button>
+          </div>`).join('') : '<p class="text-white/60">Nenhum produto cadastrado.</p>'}
+      </div>
+    </div>`;
+}
+
+function formProduto(p) {
+  return `
+  <div class="glass rounded-2xl p-5">
+    <h2 class="text-xl font-semibold mb-2">${p.id ? 'Editar produto' : 'Novo produto'}</h2>
+    <label>Nome</label>
+    <input id="p-nome" value="${esc(p.nome || '')}">
+    <label>Descrição</label>
+    <textarea id="p-desc" rows="3">${esc(p.descricao || '')}</textarea>
+    <label>Preço (R$)</label>
+    <input id="p-preco" type="number" step="0.01" value="${esc(p.preco ?? '')}">
+    <label>Categoria</label>
+    <select id="p-cat">${config.abas.map(c => `<option ${p.categoria === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
+    <label>URL da foto</label>
+    <input id="p-foto" value="${esc(p.foto || '')}">
+    <label><input id="p-ativo" type="checkbox" ${p.ativo !== false ? 'checked' : ''} style="width:auto"> Ativo (aparece para o cliente)</label>
+    <div class="flex gap-3 mt-5 flex-wrap">
+      <button class="btn" data-act="prod-salvar">Salvar produto</button>
+      <button class="btn2" data-act="prod-cancelar">Cancelar</button>
+    </div>
+  </div>`;
+}
+
+async function salvarProduto() {
+  const nome = tira($('p-nome').value);
+  if (!nome) { alert('Informe o nome do produto.'); return; }
+  const dados = {
+    nome,
+    descricao: $('p-desc').value,
+    preco: Number($('p-preco').value) || 0,
+    categoria: $('p-cat').value,
+    foto: tira($('p-foto').value),
+    ativo: $('p-ativo').checked
+  };
+  if (prodEditando && prodEditando.id) {
+    Object.assign(produtos.find(p => p.id === prodEditando.id), dados);
+  } else {
+    produtos.push({ id: novoId(), ...dados });
+  }
+  try {
+    await gravar('produtos', produtos);
+    prodEditando = null;
+    renderProdutos();
+  } catch (e) {
+    alert('Erro ao salvar: ' + e.message);
+  }
+}
+
+async function sairAdmin() {
+  await sb.auth.signOut();
+  sessao = null;
+  renderAdmin();
+}
+
+/* ---------- cliques (delegação) ---------- */
+document.addEventListener('click', async (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const a = el.dataset.act, v = el.dataset.val, id = el.dataset.id;
+
+  if (a === 'catalogo') abrirCatalogo(v || null);
+  else if (a === 'ver') verProduto(id);
+  else if (a === 'add') addCarrinho(id, Number($('qtd-prod').value || 1));
+  else if (a === 'carrinho') abrirCarrinho();
+  else if (a === 'qtd') alterarQtd(id, Number(v));
+  else if (a === 'remover') { carrinho = carrinho.filter(i => i.id !== id); abrirCarrinho(); }
+  else if (a === 'checkout') abrirCheckout();
+  else if (a === 'confirmar') confirmarPedido();
+  else if (a === 'fechar') fecharModal();
+  else if (a === 'login') entrar();
+  else if (a === 'sair') sairAdmin();
+  else if (a === 'admin-tab') { adminTab = v; prodEditando = null; renderAdmin(); }
+  else if (a === 'status') mudarStatus(id, v);
+  else if (a === 'notif') ativarNotificacoes();
+  else if (a === 'config-salvar') salvarConfig();
+  else if (a === 'prod-novo') { prodEditando = { id: null }; renderAdmin(); }
+  else if (a === 'prod-editar') { prodEditando = produtos.find(p => p.id === id) || null; renderAdmin(); }
+  else if (a === 'prod-cancelar') { prodEditando = null; renderAdmin(); }
+  else if (a === 'prod-salvar') salvarProduto();
+  else if (a === 'prod-ativo') {
+    const p = produtos.find(x => x.id === id);
+    if (p) {
+      p.ativo = p.ativo === false;
+      try { await gravar('produtos', produtos); } catch (err) { alert(err.message); }
+      renderAdmin();
+    }
+  }
+  else if (a === 'prod-excluir') {
+    if (!confirm('Excluir este produto?')) return;
+    produtos = produtos.filter(p => p.id !== id);
+    try { await gravar('produtos', produtos); } catch (err) { alert(err.message); }
+    renderAdmin();
+  }
+});
+
+iniciar();
+</script>
+</body>
+</html>
