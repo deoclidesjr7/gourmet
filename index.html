@@ -9,12 +9,12 @@
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@1&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   * { caret-color: transparent; }
-input, textarea, select { caret-color: #000 !important; }
+  input, textarea, select { caret-color: #000 !important; }
   body { font-family: 'Barlow', sans-serif; background: #000; color: #fff; margin: 0; }
   .serif { font-family: 'Instrument Serif', serif; font-style: italic; }
   .glass { background: rgba(255,255,255,.05); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,.15); }
   input, textarea, select { color: #000 !important; background: #fff !important; border-radius: 10px; padding: 8px 10px; width: 100%; box-sizing: border-box; font-size: 14px; }
-select option { color: #000; background: #fff; }
+  select option { color: #000; background: #fff; }
   label { display: block; font-size: 12px; color: rgba(255,255,255,.7); margin: 10px 0 4px; }
   .btn { background: #fff; color: #000; border-radius: 999px; padding: 10px 18px; font-weight: 600; cursor: pointer; border: none; white-space: nowrap; }
   .btn2 { background: rgba(255,255,255,.1); color: #fff; border-radius: 999px; padding: 8px 14px; cursor: pointer; border: 1px solid rgba(255,255,255,.2); white-space: nowrap; text-decoration: none; display: inline-block; }
@@ -103,6 +103,18 @@ function fundoHTML() {
   return `<img src="${esc(f)}" class="absolute inset-0 w-full h-full object-cover">`;
 }
 
+function logoHTML() {
+  const l = config.logo || '';
+  if (!l) return '';
+  if (/\.(webp|webm)$/i.test(l)) {
+    const base = l.replace(/\.(webp|webm)$/i, '');
+    return isSafari
+      ? `<img src="${esc(base)}.webp" class="max-h-[60vh] max-w-[80vw]">`
+      : `<video autoplay muted playsinline class="max-h-[60vh] max-w-[80vw]" src="${esc(base)}.webm"></video>`;
+  }
+  return `<img src="${esc(l)}" class="max-h-[60vh] max-w-[80vw]">`;
+}
+
 function renderSite() {
   const conta = sessao
     ? `<a href="#conta" class="text-white/70 hover:text-white">Minha conta</a>`
@@ -114,18 +126,14 @@ function renderSite() {
     <div class="absolute inset-0 bg-black/50"></div>
 
     <nav class="fixed top-4 left-1/2 -translate-x-1/2 z-50 glass rounded-full px-4 py-2 flex items-center gap-4 text-sm max-w-[94vw] overflow-x-auto whitespace-nowrap">
-    
+      <span class="font-semibold">${esc(config.titulo)}</span>
       ${config.abas.map(c => `<button class="text-white/70 hover:text-white" data-act="catalogo" data-val="${esc(c)}">${esc(c)}</button>`).join('')}
       ${conta}
       <button class="btn" data-act="carrinho">Carrinho (${qtdCarrinho()})</button>
     </nav>
 
     <div class="relative z-10 min-h-screen flex items-center justify-center px-4 text-center">
-            ${config.logo
-        ? (/\.(webm|mp4)$/i.test(config.logo)
-            ? `<video autoplay muted playsinline class="max-h-[60vh] max-w-[80vw]" src="${esc(config.logo)}"></video>`
-            : `<img src="${esc(config.logo)}" class="max-h-[60vh] max-w-[80vw]">`)
-        : `<h1 class="serif text-6xl md:text-9xl leading-none">${esc(config.titulo)}</h1>`}
+      ${logoHTML() || `<h1 class="serif text-6xl md:text-9xl leading-none">${esc(config.titulo)}</h1>`}
     </div>
 
     <p class="absolute bottom-10 left-6 max-w-[220px] text-sm text-white/80 z-10">${esc(config.fraseEsq)}</p>
