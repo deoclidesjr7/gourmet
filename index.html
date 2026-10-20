@@ -11,9 +11,10 @@
   * { caret-color: transparent; }
   input, textarea, select { caret-color: #000 !important; }
   body { font-family: 'Barlow', sans-serif; background: #000; color: #fff; margin: 0; }
+  .tela { min-height: 100vh; min-height: 100svh; }
   .serif { font-family: 'Instrument Serif', serif; font-style: italic; }
     .glass { background: rgba(20,20,20,.75); border: 1px solid rgba(255,255,255,.15); }
-  input, textarea, select { color: #000 !important; background: #fff !important; border-radius: 10px; padding: 10px 14px !important; width: 100%; box-sizing: border-box; font-size: 14px; }
+  input, textarea, select { color: #000 !important; background: #fff !important; border-radius: 10px; padding: 10px 14px !important; width: 100%; box-sizing: border-box; font-size: 16px !important; }
   select option { color: #000; background: #fff; }
   .campo-senha input { padding-right: 78px !important; }
   label { display: block; font-size: 12px; color: rgba(255,255,255,.7); margin: 10px 0 4px; }
@@ -34,7 +35,7 @@ const ADMIN_EMAILS = [
 ];
 const isAdminEmail = email => ADMIN_EMAILS.map(e => e.toLowerCase()).includes(String(email || '').toLowerCase());
 const sb = supabase.createClient(SB_URL, SB_KEY);
-const isSafari = /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
+const isSafari = /iP(hone|ad|od)/.test(navigator.userAgent) || /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
 
 const CONFIG_PADRAO = {
   titulo: 'Gourmet',
@@ -89,7 +90,16 @@ function render() {
   if (h === '#admin') renderAdmin();
   else if (h === '#conta') renderConta();
   else renderSite();
+  tocarVideos();
 }
+function tocarVideos() {
+  document.querySelectorAll('video').forEach(v => {
+    v.muted = true; v.defaultMuted = true; v.setAttribute('playsinline', '');
+    const p = v.play(); if (p && p.catch) p.catch(() => {});
+  });
+}
+// se o iPhone bloquear o autoplay (economia de bateria), tenta de novo no 1º toque
+document.addEventListener('touchstart', tocarVideos, { once: true, passive: true });
 window.addEventListener('hashchange', render);
 
 async function iniciar() {
@@ -126,7 +136,7 @@ function renderSite() {
           : `<button class="font-bold text-white hover:text-white" data-act="login-abrir">Entrar</button>`;
 
   $('app').innerHTML = `
-  <div class="relative min-h-screen overflow-hidden">
+  <div class="relative tela overflow-hidden">
     ${fundoHTML()}
     <div class="absolute inset-0 bg-black/50"></div>
 
@@ -137,7 +147,7 @@ function renderSite() {
       <button class="btn" data-act="carrinho">Carrinho (${qtdCarrinho()})</button>
     </nav>
 
-    <div class="relative z-10 min-h-screen flex items-center justify-center px-4 text-center">
+    <div class="relative z-10 tela flex items-center justify-center px-4 text-center">
       ${logoHTML() || `<h1 class="serif text-6xl md:text-9xl leading-none">${esc(config.titulo)}</h1>`}
     </div>
 
