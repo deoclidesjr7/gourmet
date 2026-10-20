@@ -14,7 +14,7 @@
   input, textarea, select { color: #000; background: #fff; border-radius: 10px; padding: 8px 10px; width: 100%; box-sizing: border-box; font-size: 14px; }
   label { display: block; font-size: 12px; color: rgba(255,255,255,.7); margin: 10px 0 4px; }
   .btn { background: #fff; color: #000; border-radius: 999px; padding: 10px 18px; font-weight: 600; cursor: pointer; border: none; white-space: nowrap; }
-  .btn2 { background: rgba(255,255,255,.1); color: #fff; border-radius: 999px; padding: 8px 14px; cursor: pointer; border: 1px solid rgba(255,255,255,.2); white-space: nowrap; }
+  .btn2 { background: rgba(255,255,255,.1); color: #fff; border-radius: 999px; padding: 8px 14px; cursor: pointer; border: 1px solid rgba(255,255,255,.2); white-space: nowrap; text-decoration: none; display: inline-block; }
 </style>
 </head>
 <body>
@@ -46,6 +46,8 @@ let sessao = null;
 let adminTab = 'pedidos';
 let prodEditando = null;
 let canal = null;
+let pendingAfterLogin = null;
+let meusPedidos = [];
 
 const $ = id => document.getElementById(id);
 const tira = s => String(s ?? '').trim();
@@ -54,6 +56,7 @@ const fmt = v => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
 const novoId = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const subtotal = () => carrinho.reduce((s, i) => s + i.preco * i.qtd, 0);
 const qtdCarrinho = () => carrinho.reduce((s, i) => s + i.qtd, 0);
+const nomeCliente = () => sessao?.user?.user_metadata?.nome || sessao?.user?.email || '';
 
 /* ---------- dados ---------- */
 async function carregarDados() {
@@ -73,7 +76,9 @@ async function gravar(key, value) {
 
 /* ---------- rotas ---------- */
 function render() {
-  if (location.hash === '#admin') renderAdmin();
+  const h = location.hash;
+  if (h === '#admin') renderAdmin();
+  else if (h === '#conta') renderConta();
   else renderSite();
 }
 window.addEventListener('hashchange', render);
@@ -82,10 +87,6 @@ async function iniciar() {
   await carregarDados();
   const { data } = await sb.auth.getSession();
   sessao = data.session;
-  if (sessao && sessao.user.email !== ADMIN_EMAIL) {
-    await sb.auth.signOut();
-    sessao = null;
-  }
   render();
 }
 
@@ -99,6 +100,10 @@ function fundoHTML() {
 }
 
 function renderSite() {
+  const conta = sessao
+    ? `<a href="#conta" class="text-white/70 hover:text-white">Minha conta</a>`
+    : `<button class="text-white/70 hover:text-white" data-act="login-abrir">Entrar</button>`;
+
   $('app').innerHTML = `
   <div class="relative min-h-screen overflow-hidden">
     ${fundoHTML()}
@@ -107,6 +112,7 @@ function renderSite() {
     <nav class="fixed top-4 left-1/2 -translate-x-1/2 z-50 glass rounded-full px-4 py-2 flex items-center gap-4 text-sm max-w-[94vw] overflow-x-auto whitespace-nowrap">
       <span class="font-semibold">${esc(config.titulo)}</span>
       ${config.abas.map(c => `<button class="text-white/70 hover:text-white" data-act="catalogo" data-val="${esc(c)}">${esc(c)}</button>`).join('')}
+      ${conta}
       <button class="btn" data-act="carrinho">Carrinho (${qtdCarrinho()})</button>
     </nav>
 
@@ -133,6 +139,173 @@ function modal(html) {
     </div>`;
 }
 function fecharModal() { $('modal').innerHTML = ''; }
+
+/* ---------- login e cadastro do cliente ---------- */
+function abrirLogin(modo = 'entrar', nota = '', depois = null) {
+  pendingAfterLogin = depois;
+  const cad = modo === 'cadastro';
+  modal(`
+    <div class="flex gap-2 mb-4">
+      <button class="${cad ? 'btn2' : 'btn'}" data-act="login-tab" data-val="entrar">Entrar</button>
+      <button class="${cad ? 'btn' : 'btn2'}" data-act="login-tab" data-val="cadastro">Criar conta</button>
+    </div>
+    ${nota ? `<p class="text-white/70 text-sm mb-3">${esc(nota)}</p>` : ''}
+    ${cad ? `
+      <label>Seu nome</label>
+      <input id="u-nome">
+      <label>WhatsApp (com DDD)</label>
+      <input id="u-whats" inputmode="tel">` : ''}
+    <label>E-mail</label>
+    <input id="u-email" type="email">
+    <label>Senha (mínimo 6 caracteres)</label>
+    <input id="u-senha" type="password">
+    <p id="u-erro" class="text-red-400 text-sm mt-3"></p>
+    <button class="btn w-full mt-5" data-act="${cad ? 'cadastro-enviar' : 'entrar-enviar'}">${cad ? 'Criar conta' : 'Entrar'}</button>`);
+}
+
+function traduzErro(e) {
+  const m = (e?.message || '').toLowerCase();
+  if (m.includes('invalid login')) return 'E-mail ou senha incorretos.';
+  if (m.includes('already registered') || m.includes('already been registered')) return 'Já existe uma conta com este e-mail. Use "Entrar".';
+  if (m.includes('email not confirmed')) return 'Confirme seu e-mail pelo link que enviamos antes de entrar.';
+  if (m.includes('password')) return 'A senha precisa ter pelo menos 6 caracteres.';
+  if (m.includes('rate limit') || m.includes('too many')) return 'Muitas tentativas. Aguarde alguns minutos.';
+  return 'Não foi possível concluir. Tente novamente.';
+}
+
+async function entrarCliente() {
+  const email = tira($('u-email').value);
+  const senha = $('u-senha').value;
+  if (!email || !senha) { $('u-erro').textContent = 'Informe e-mail e senha.'; return; }
+  const { data, error } = await sb.auth.signInWithPassword({ email, password: senha });
+  if (error) { $('u-erro').textContent = traduzErro(error); return; }
+  sessao = data.session;
+  concluirLogin();
+}
+
+async function cadastrarCliente() {
+  const nome = tira($('u-nome').value);
+  const whats = tira($('u-whats').value).replace(/\D/g, '');
+  const email = tira($('u-email').value);
+  const senha = $('u-senha').value;
+  if (!nome || !whats || !email || senha.length < 6) {
+    $('u-erro').textContent = 'Preencha nome, WhatsApp, e-mail e uma senha com pelo menos 6 caracteres.';
+    return;
+  }
+  const { data, error } = await sb.auth.signUp({
+    email,
+    password: senha,
+    options: { data: { nome, whatsapp: whats }, emailRedirectTo: location.origin + location.pathname }
+  });
+  if (error) { $('u-erro').textContent = traduzErro(error); return; }
+
+  if (data.session) {
+    sessao = data.session;
+    concluirLogin();
+    return;
+  }
+  modal(`
+    <h2 class="serif text-3xl mb-3">Quase lá!</h2>
+    <p class="text-white/70">Enviamos um link de confirmação para <b>${esc(email)}</b>. Clique nele para ativar sua conta e depois entre no site.</p>
+    <button class="btn mt-5" data-act="fechar">Entendi</button>`);
+}
+
+function concluirLogin() {
+  fecharModal();
+  const depois = pendingAfterLogin;
+  pendingAfterLogin = null;
+  render();
+  if (depois) depois();
+}
+
+async function sair() {
+  await sb.auth.signOut();
+  sessao = null;
+  if (canal) { sb.removeChannel(canal); canal = null; }
+  location.hash = '';
+  render();
+}
+
+/* ---------- área do cliente: meus pedidos ---------- */
+async function renderConta() {
+  if (!sessao) {
+    $('app').innerHTML = `
+    <div class="min-h-screen flex items-center justify-center p-6 text-center">
+      <div>
+        <h1 class="serif text-4xl mb-3">Minha conta</h1>
+        <p class="text-white/70 mb-5">Entre para ver seus pedidos.</p>
+        <div class="flex gap-3 justify-center flex-wrap">
+          <button class="btn" data-act="login-abrir">Entrar</button>
+          <button class="btn2" data-act="cadastro-abrir">Criar conta</button>
+          <a class="btn2" href="#">Voltar ao site</a>
+        </div>
+      </div>
+    </div>`;
+    return;
+  }
+
+  $('app').innerHTML = `
+  <div class="min-h-screen p-5 max-w-2xl mx-auto">
+    <div class="flex justify-between items-center mb-6 flex-wrap gap-3">
+      <h1 class="serif text-4xl">Olá, ${esc(nomeCliente())}</h1>
+      <div class="flex gap-2 flex-wrap">
+        <button class="btn2" data-act="catalogo">Ver catálogo</button>
+        <a class="btn2" href="#">Voltar ao site</a>
+        <button class="btn2" data-act="sair">Sair</button>
+      </div>
+    </div>
+    <h2 class="text-xl font-semibold mb-3">Meus pedidos</h2>
+    <div id="meus"><p class="text-white/60">Carregando...</p></div>
+  </div>`;
+
+  const { data, error } = await sb.from('gourmet_pedidos')
+    .select('*')
+    .eq('user_id', sessao.user.id)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    $('meus').innerHTML = `<p class="text-red-400">Erro ao carregar: ${esc(error.message)}</p>`;
+    return;
+  }
+  meusPedidos = data || [];
+
+  $('meus').innerHTML = meusPedidos.length ? meusPedidos.map(p => `
+    <div class="glass rounded-xl p-4 mb-3">
+      <div class="flex justify-between flex-wrap gap-2">
+        <p class="font-semibold">${new Date(p.created_at).toLocaleDateString('pt-BR')}</p>
+        <p class="text-sm px-3 py-1 rounded-full bg-white/10">${esc(p.status)}</p>
+      </div>
+      <ul class="text-sm mt-2 list-disc list-inside text-white/80">${(p.itens || []).map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+      <p class="mt-2">Total: <b>${fmt(p.total)}</b> · ${esc(p.forma_pagamento)}</p>
+      ${p.carrinho
+        ? `<button class="btn mt-3" data-act="reorder" data-id="${esc(p.id)}">Pedir de novo</button>`
+        : '<p class="text-white/50 text-xs mt-2">Pedidos feitos antes desta atualização não podem ser repetidos.</p>'}
+    </div>`).join('')
+    : '<p class="text-white/60">Você ainda não fez nenhum pedido.</p>';
+}
+
+function reorderPedido(id) {
+  const p = meusPedidos.find(x => x.id === id);
+  if (!p || !p.carrinho) return;
+
+  const novo = [];
+  let indisponiveis = 0;
+  p.carrinho.forEach(c => {
+    const prod = produtos.find(x => x.id === c.id && x.ativo !== false);
+    if (prod) novo.push({ id: prod.id, nome: prod.nome, preco: Number(prod.preco) || 0, qtd: Math.max(1, Number(c.qtd) || 1) });
+    else indisponiveis++;
+  });
+
+  if (!novo.length) {
+    alert('Nenhum item deste pedido está disponível no momento.');
+    return;
+  }
+  carrinho = novo;
+  if (indisponiveis) alert(indisponiveis + ' item(ns) deste pedido não está(ão) mais disponível(is) e foram removidos.');
+  location.hash = '';
+  render();
+  abrirCarrinho();
+}
 
 /* ---------- catálogo e carrinho ---------- */
 function abrirCatalogo(cat) {
@@ -219,15 +392,24 @@ function abrirCarrinho() {
     </div>`);
 }
 
+function iniciarCheckout() {
+  if (!sessao) {
+    abrirLogin('entrar', 'Entre ou crie sua conta para finalizar o pedido e acompanhar seus pedidos.', abrirCheckout);
+    return;
+  }
+  abrirCheckout();
+}
+
 function abrirCheckout() {
+  const m = sessao?.user?.user_metadata || {};
   modal(`
     <h2 class="serif text-3xl mb-4">Finalizar pedido</h2>
     <label>Seu nome</label>
-    <input id="c-nome">
+    <input id="c-nome" value="${esc(m.nome || '')}">
     <label>WhatsApp (com DDD)</label>
-    <input id="c-whats" inputmode="tel">
+    <input id="c-whats" inputmode="tel" value="${esc(m.whatsapp || '')}">
     <label>Endereço de entrega</label>
-    <textarea id="c-end" rows="2"></textarea>
+    <textarea id="c-end" rows="2">${esc(m.endereco || '')}</textarea>
     <label>Forma de pagamento (pago na entrega)</label>
     <select id="c-pag" onchange="$('c-troco-wrap').style.display = this.value === 'dinheiro' ? 'block' : 'none'">
       <option value="pix">PIX</option>
@@ -247,6 +429,8 @@ function abrirCheckout() {
 }
 
 async function confirmarPedido() {
+  if (!sessao) { iniciarCheckout(); return; }
+
   const nome = tira($('c-nome').value);
   const whats = tira($('c-whats').value).replace(/\D/g, '');
   const end = tira($('c-end').value);
@@ -262,11 +446,19 @@ async function confirmarPedido() {
   const troco = pag === 'dinheiro' && t > 0 ? t : null;
   const rotulo = { pix: 'PIX na entrega', cartao: 'Cartão na entrega', dinheiro: 'Dinheiro na entrega' }[pag];
   const itens = carrinho.map(i => `${i.qtd}x ${i.nome} (${fmt(i.preco * i.qtd)})`);
+  const itensGuardados = carrinho.map(i => ({ id: i.id, qtd: i.qtd }));
 
   const win = window.open('', '_blank');
   const { error } = await sb.from('gourmet_pedidos').insert({
-    cliente_nome: nome, whatsapp: whats, endereco: end, itens,
-    total, forma_pagamento: rotulo, troco
+    user_id: sessao.user.id,
+    cliente_nome: nome,
+    whatsapp: whats,
+    endereco: end,
+    itens,
+    carrinho: itensGuardados,
+    total,
+    forma_pagamento: rotulo,
+    troco
   });
 
   if (error) {
@@ -275,6 +467,8 @@ async function confirmarPedido() {
     alert('Erro ao enviar o pedido. Tente novamente.');
     return;
   }
+
+  sb.auth.updateUser({ data: { nome, whatsapp: whats, endereco: end } }).catch(() => {});
 
   let msg = '*Novo pedido*\n\n' + itens.join('\n') + '\n\nSubtotal: ' + fmt(subtotal());
   if (taxa) msg += '\nTaxa da maquininha: ' + fmt(taxa);
@@ -287,19 +481,21 @@ async function confirmarPedido() {
   carrinho = [];
   modal(`
     <h2 class="serif text-3xl mb-2">Pedido enviado!</h2>
-    <p class="text-white/70">Confirme o envio da mensagem no WhatsApp para a loja. Obrigado!</p>
+    <p class="text-white/70">Confirme o envio da mensagem no WhatsApp para a loja. Você também pode acompanhar o pedido em <b>Minha conta</b>.</p>
     <button class="btn mt-5" data-act="fechar">Fechar</button>`);
 }
 
 /* ---------- admin: login ---------- */
-async function entrar() {
+async function entrarAdmin() {
   const { data, error } = await sb.auth.signInWithPassword({
     email: tira($('l-email').value),
     password: $('l-senha').value
   });
-  if (error || data.user?.email !== ADMIN_EMAIL) {
+  if (error) { $('l-erro').textContent = traduzErro(error); return; }
+  if (data.user?.email !== ADMIN_EMAIL) {
     await sb.auth.signOut();
-    $('l-erro').textContent = 'E-mail ou senha incorretos.';
+    sessao = null;
+    $('l-erro').textContent = 'Esta conta não tem acesso ao painel.';
     return;
   }
   sessao = data.session;
@@ -308,7 +504,7 @@ async function entrar() {
 
 /* ---------- admin: tela ---------- */
 async function renderAdmin() {
-  if (!sessao) {
+  if (!sessao || sessao.user.email !== ADMIN_EMAIL) {
     $('app').innerHTML = `
     <div class="min-h-screen flex items-center justify-center p-6">
       <div class="glass rounded-2xl p-6 w-full max-w-sm">
@@ -317,8 +513,9 @@ async function renderAdmin() {
         <input id="l-email" type="email">
         <label>Senha</label>
         <input id="l-senha" type="password">
-        <button class="btn w-full mt-5" data-act="login">Entrar</button>
+        <button class="btn w-full mt-5" data-act="admin-login">Entrar</button>
         <p id="l-erro" class="text-red-400 text-sm mt-3"></p>
+        <a class="btn2 w-full mt-4 text-center block" href="#">Voltar ao site</a>
       </div>
     </div>`;
     return;
@@ -331,8 +528,8 @@ async function renderAdmin() {
       <h1 class="serif text-4xl">Painel</h1>
       <div class="flex gap-2 flex-wrap">
         ${abas.map(([k, n]) => `<button class="${adminTab === k ? 'btn' : 'btn2'}" data-act="admin-tab" data-val="${k}">${n}</button>`).join('')}
+        <a class="btn2" href="#">Ver site</a>
         <button class="btn2" data-act="sair">Sair</button>
-        <button class="btn2" onclick="location.hash=''">Ver site</button>
       </div>
     </div>
     <div id="admin-conteudo"></div>
@@ -538,12 +735,6 @@ async function salvarProduto() {
   }
 }
 
-async function sairAdmin() {
-  await sb.auth.signOut();
-  sessao = null;
-  renderAdmin();
-}
-
 /* ---------- cliques (delegação) ---------- */
 document.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
@@ -556,11 +747,19 @@ document.addEventListener('click', async (e) => {
   else if (a === 'carrinho') abrirCarrinho();
   else if (a === 'qtd') alterarQtd(id, Number(v));
   else if (a === 'remover') { carrinho = carrinho.filter(i => i.id !== id); abrirCarrinho(); }
-  else if (a === 'checkout') abrirCheckout();
+  else if (a === 'checkout') iniciarCheckout();
   else if (a === 'confirmar') confirmarPedido();
   else if (a === 'fechar') fecharModal();
-  else if (a === 'login') entrar();
-  else if (a === 'sair') sairAdmin();
+
+  else if (a === 'login-abrir') abrirLogin('entrar');
+  else if (a === 'cadastro-abrir') abrirLogin('cadastro');
+  else if (a === 'login-tab') abrirLogin(v);
+  else if (a === 'entrar-enviar') entrarCliente();
+  else if (a === 'cadastro-enviar') cadastrarCliente();
+  else if (a === 'reorder') reorderPedido(id);
+  else if (a === 'sair') sair();
+
+  else if (a === 'admin-login') entrarAdmin();
   else if (a === 'admin-tab') { adminTab = v; prodEditando = null; renderAdmin(); }
   else if (a === 'status') mudarStatus(id, v);
   else if (a === 'notif') ativarNotificacoes();
