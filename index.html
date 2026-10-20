@@ -29,10 +29,11 @@ const SB_URL = 'https://dovacwxtjtcfryfpzhuz.supabase.co';
 const SB_KEY = 'sb_publishable_PkC6dCo7NMYLW3GmMRL45Q_-tzzpmBv';
 const ADMIN_EMAIL = 'consultoria.deoclides.junior@gmail.com';
 const sb = supabase.createClient(SB_URL, SB_KEY);
+const isSafari = /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
 
 const CONFIG_PADRAO = {
   titulo: 'Gourmet',
-  logo: '  logo: 'logo-transparente.webm',',
+  logo: 'logo-animada.webp',
   fraseEsq: 'Bolos caseiros feitos sob encomenda, com ingredientes frescos.',
   fraseDir: 'Escolha seu sabor e receba um bolo feito com carinho.',
   fundo: 'bolo-floresta.mp4',
