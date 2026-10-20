@@ -27,7 +27,11 @@
 <script>
 const SB_URL = 'https://dovacwxtjtcfryfpzhuz.supabase.co';
 const SB_KEY = 'sb_publishable_PkC6dCo7NMYLW3GmMRL45Q_-tzzpmBv';
-const ADMIN_EMAIL = 'consultoria.deoclides.junior@gmail.com';
+const ADMIN_EMAILS = [
+  'consultoria.deoclides.junior@gmail.com',
+  'cristinapedrosolange@gmail.com'
+];
+const isAdminEmail = email => ADMIN_EMAILS.map(e => e.toLowerCase()).includes(String(email || '').toLowerCase());
 const sb = supabase.createClient(SB_URL, SB_KEY);
 const isSafari = /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
 
@@ -340,7 +344,7 @@ function abrirCatalogo(cat) {
     <div class="grid grid-cols-2 gap-4">
       ${lista.length ? lista.map(p => `
         <button class="text-left glass rounded-xl overflow-hidden" data-act="ver" data-id="${esc(p.id)}">
-          ${p.foto ? `<img src="${esc(p.foto)}" class="w-full h-32 object-cover">` : '<div class="h-32 bg-white/10"></div>'}
+          ${p.foto ? `<img loading="lazy" decoding="async" src="${esc(p.foto)}" class="w-full h-32 object-cover">` : '<div class="h-32 bg-white/10"></div>'}
           <div class="p-3"><p class="font-medium">${esc(p.nome)}</p><p class="text-white/70 text-sm">${fmt(p.preco)}</p></div>
         </button>`).join('')
         : '<p class="text-white/60 col-span-2">Nenhum produto nesta categoria ainda.</p>'}
@@ -351,7 +355,7 @@ function verProduto(id) {
   const p = produtos.find(x => x.id === id);
   if (!p) return;
   modal(`
-    ${p.foto ? `<img src="${esc(p.foto)}" class="w-full h-64 object-cover rounded-xl mb-4">` : ''}
+    ${p.foto ? `<img loading="lazy" decoding="async" src="${esc(p.foto)}" class="w-full h-64 object-cover rounded-xl mb-4">` : ''}
     <h2 class="serif text-3xl">${esc(p.nome)}</h2>
     <p class="text-white/70 mt-2">${esc(p.descricao)}</p>
     <p class="text-2xl font-semibold mt-4">${fmt(p.preco)}</p>
@@ -506,7 +510,7 @@ async function entrarAdmin() {
     password: $('l-senha').value
   });
   if (error) { $('l-erro').textContent = traduzErro(error); return; }
-  if (data.user?.email !== ADMIN_EMAIL) {
+  if (!isAdminEmail(data.user?.email)) {
     await sb.auth.signOut();
     sessao = null;
     $('l-erro').textContent = 'Esta conta não tem acesso ao painel.';
@@ -518,7 +522,7 @@ async function entrarAdmin() {
 
 /* ---------- admin: tela ---------- */
 async function renderAdmin() {
-  if (!sessao || sessao.user.email !== ADMIN_EMAIL) {
+  if (!sessao || !isAdminEmail(sessao.user.email)) {
     $('app').innerHTML = `
     <div class="min-h-screen flex items-center justify-center p-6">
       <div class="glass rounded-2xl p-6 w-full max-w-sm">
@@ -689,7 +693,7 @@ function renderProdutos() {
       <div class="space-y-3">
         ${produtos.length ? produtos.map(p => `
           <div class="flex items-center gap-3 border border-white/15 rounded-xl p-3">
-            ${p.foto ? `<img src="${esc(p.foto)}" class="w-16 h-16 object-cover rounded-lg">` : '<div class="w-16 h-16 bg-white/10 rounded-lg"></div>'}
+            ${p.foto ? `<img loading="lazy" decoding="async" src="${esc(p.foto)}" class="w-16 h-16 object-cover rounded-lg">` : '<div class="w-16 h-16 bg-white/10 rounded-lg"></div>'}
             <div class="flex-1">
               <p class="font-medium">${esc(p.nome)} ${p.ativo === false ? '<span class="text-yellow-400 text-xs">(pausado)</span>' : ''}</p>
               <p class="text-sm text-white/60">${esc(p.categoria)} · ${fmt(p.preco)}</p>
@@ -714,8 +718,11 @@ function formProduto(p) {
     <input id="p-preco" type="number" step="0.01" value="${esc(p.preco ?? '')}">
     <label>Categoria</label>
     <select id="p-cat">${config.abas.map(c => `<option ${p.categoria === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}</select>
-    <label>URL da foto</label>
-    <input id="p-foto" value="${esc(p.foto || '')}">
+    <label>Foto do produto (é reduzida automaticamente ao salvar)</label>
+    ${p.foto ? `<img loading="lazy" decoding="async" src="${esc(p.foto)}" class="w-24 h-24 object-cover rounded-lg mb-2">` : ''}
+    <input id="p-foto-arquivo" type="file" accept="image/*" onchange="fotoEscolhida(this)">
+    <input id="p-foto" type="hidden" value="${esc(p.foto || '')}">
+    <p id="p-foto-status" class="text-xs text-white/60 mt-1"></p>
     <label><input id="p-ativo" type="checkbox" ${p.ativo !== false ? 'checked' : ''} style="width:auto"> Ativo (aparece para o cliente)</label>
     <div class="flex gap-3 mt-5 flex-wrap">
       <button class="btn" data-act="prod-salvar">Salvar produto</button>
@@ -724,15 +731,74 @@ function formProduto(p) {
   </div>`;
 }
 
+/* ---------- fotos: redução e envio ---------- */
+function fotoEscolhida(input) {
+  const f = input.files[0];
+  $('p-foto-status').textContent = f
+    ? 'Foto selecionada (' + (f.size / 1024 / 1024).toFixed(1) + ' MB). Será reduzida ao salvar.'
+    : '';
+}
+
+async function reduzirFoto(file, largura = 800) {
+  const img = await new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const im = new Image();
+    im.onload = () => { URL.revokeObjectURL(url); resolve(im); };
+    im.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Não foi possível ler esta imagem. Tente outra foto (JPG ou PNG).')); };
+    im.src = url;
+  });
+  const escala = Math.min(1, largura / img.width);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(img.width * escala);
+  canvas.height = Math.round(img.height * escala);
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  // Safari antigo não gera WebP no canvas; nesse caso usa JPEG
+  let blob = await new Promise(res => canvas.toBlob(res, 'image/webp', 0.8));
+  let ext = 'webp';
+  if (!blob || blob.type !== 'image/webp') {
+    blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.85));
+    ext = 'jpg';
+  }
+  if (!blob) throw new Error('Falha ao preparar a imagem.');
+  return { blob, ext };
+}
+
+async function enviarFoto(file) {
+  const { blob, ext } = await reduzirFoto(file);
+  const caminho = 'produtos/' + novoId() + '.' + ext;
+  const { error } = await sb.storage.from('fotos').upload(caminho, blob, {
+    contentType: blob.type,
+    cacheControl: '31536000'
+  });
+  if (error) throw error;
+  const { data } = sb.storage.from('fotos').getPublicUrl(caminho);
+  return data.publicUrl;
+}
+
 async function salvarProduto() {
   const nome = tira($('p-nome').value);
   if (!nome) { alert('Informe o nome do produto.'); return; }
+
+  let foto = tira($('p-foto').value);
+  const arquivo = $('p-foto-arquivo').files[0];
+  if (arquivo) {
+    try {
+      $('p-foto-status').textContent = 'Enviando foto...';
+      foto = await enviarFoto(arquivo);
+    } catch (e) {
+      $('p-foto-status').textContent = '';
+      alert('Erro ao enviar a foto: ' + (e.message || e));
+      return;
+    }
+  }
+
   const dados = {
     nome,
     descricao: $('p-desc').value,
     preco: Number($('p-preco').value) || 0,
     categoria: $('p-cat').value,
-    foto: tira($('p-foto').value),
+    foto,
     ativo: $('p-ativo').checked
   };
   if (prodEditando && prodEditando.id) {
