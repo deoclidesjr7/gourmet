@@ -126,7 +126,7 @@ function renderSite() {
     <div class="absolute inset-0 bg-black/50"></div>
 
     <nav class="fixed top-4 left-1/2 -translate-x-1/2 z-50 glass rounded-full px-4 py-2 flex items-center gap-4 text-sm max-w-[94vw] overflow-x-auto whitespace-nowrap">
-      <span class="font-semibold">${esc(config.titulo)}</span>
+      
       ${config.abas.map(c => `<button class="text-white/70 hover:text-white" data-act="catalogo" data-val="${esc(c)}">${esc(c)}</button>`).join('')}
       ${conta}
       <button class="btn" data-act="carrinho">Carrinho (${qtdCarrinho()})</button>
