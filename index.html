@@ -32,7 +32,7 @@ const sb = supabase.createClient(SB_URL, SB_KEY);
 
 const CONFIG_PADRAO = {
   titulo: 'Gourmet',
-  logo: '',
+  logo: '  logo: 'logo-transparente.webm',',
   fraseEsq: 'Bolos caseiros feitos sob encomenda, com ingredientes frescos.',
   fraseDir: 'Escolha seu sabor e receba um bolo feito com carinho.',
   fundo: 'bolo-floresta.mp4',
@@ -113,15 +113,17 @@ function renderSite() {
     <div class="absolute inset-0 bg-black/50"></div>
 
     <nav class="fixed top-4 left-1/2 -translate-x-1/2 z-50 glass rounded-full px-4 py-2 flex items-center gap-4 text-sm max-w-[94vw] overflow-x-auto whitespace-nowrap">
-      <span class="font-semibold">${esc(config.titulo)}</span>
+    
       ${config.abas.map(c => `<button class="text-white/70 hover:text-white" data-act="catalogo" data-val="${esc(c)}">${esc(c)}</button>`).join('')}
       ${conta}
       <button class="btn" data-act="carrinho">Carrinho (${qtdCarrinho()})</button>
     </nav>
 
     <div class="relative z-10 min-h-screen flex items-center justify-center px-4 text-center">
-      ${config.logo
-        ? `<img src="${esc(config.logo)}" class="max-h-40 max-w-[80vw]">`
+            ${config.logo
+        ? (/\.(webm|mp4)$/i.test(config.logo)
+            ? `<video autoplay muted playsinline class="max-h-[60vh] max-w-[80vw]" src="${esc(config.logo)}"></video>`
+            : `<img src="${esc(config.logo)}" class="max-h-[60vh] max-w-[80vw]">`)
         : `<h1 class="serif text-6xl md:text-9xl leading-none">${esc(config.titulo)}</h1>`}
     </div>
 
