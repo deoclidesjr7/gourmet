@@ -125,7 +125,7 @@ function logoHTML() {
     const base = l.replace(/\.(webp|webm)$/i, '');
     return isSafari
       ? `<img src="${esc(base)}.webp" class="w-[95vw] md:w-auto md:max-w-[80vw] md:max-h-[60vh]">`
-      : `<video autoplay muted playsinline class="w-[95vw] md:w-auto md:max-w-[80vw] md:max-h-[60vh]" src="${esc(base)}.webm"></video>`;
+      : `<video autoplay muted loop playsinline class="w-[95vw] md:w-auto md:max-w-[80vw] md:max-h-[60vh]" src="${esc(base)}.webm"></video>`;
   }
   return `<img src="${esc(l)}" class="w-[95vw] md:w-auto md:max-w-[80vw] md:max-h-[60vh]">`;
 }
