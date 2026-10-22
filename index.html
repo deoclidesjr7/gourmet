@@ -390,8 +390,19 @@ async function renderConta() {
       ${p.carrinho
         ? `<button class="btn mt-3" data-act="reorder" data-id="${esc(p.id)}">Pedir de novo</button>`
         : '<p class="text-white/50 text-xs mt-2">Pedidos feitos antes desta atualização não podem ser repetidos.</p>'}
+      ${p.status === 'novo' ? `<button class="btn2 mt-3 ml-2" data-act="cancelar-meu" data-id="${esc(p.id)}">Cancelar pedido</button>` : ''}
     </div>`).join('')
     : '<p class="text-white/60">Você ainda não fez nenhum pedido.</p>';
+}
+
+async function cancelarMeuPedido(id) {
+  if (!confirm('Deseja realmente cancelar este pedido?')) return;
+  const { data, error } = await sb.rpc('cancelar_pedido', { p_id: String(id) });
+  if (error || data === false) {
+    alert('Não foi possível cancelar. O pedido pode já estar em preparo. Fale com a loja pelo WhatsApp.');
+    return;
+  }
+  renderConta();
 }
 
 function reorderPedido(id) {
@@ -1007,6 +1018,7 @@ document.addEventListener('click', async (e) => {
   else if (a === 'entrar-enviar') entrarCliente();
   else if (a === 'cadastro-enviar') cadastrarCliente();
   else if (a === 'reorder') reorderPedido(id);
+  else if (a === 'cancelar-meu') cancelarMeuPedido(id);
   else if (a === 'sair') sair();
   else if (a === 'toggle-senha') {
     const inp = el.parentElement.querySelector('input');
