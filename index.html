@@ -87,6 +87,8 @@ async function carregarDados() {
   });
 }
 
+const linkMapa = end => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(String(end || '').replace(/\s+/g, ' ').trim());
+
 async function gravar(key, value) {
   const { error } = await sb.from('gourmet_data')
     .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
@@ -498,6 +500,65 @@ function iniciarCheckout() {
   abrirCheckout();
 }
 
+const CIDADES_ENTREGA = ['Navegantes', 'Itajaí', 'Balneário Camboriú', 'Ilhota', 'Luiz Alves', 'Balneário Piçarras', 'Barra Velha', 'Penha'];
+let sugestoesRua = [], ruaTimer = null, ruaReq = 0;
+const semAcento = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+function comporEndereco() {
+  const rua = tira($('c-rua').value), num = tira($('c-num').value), bairro = tira($('c-bairro').value);
+  const compl = tira($('c-compl').value), cid = $('c-cidade').value;
+  if (!rua) return;
+  let e = rua;
+  if (num) e += ', ' + num;
+  if (compl) e += ' - ' + compl;
+  if (bairro) e += ' - ' + bairro;
+  if (cid) e += ', ' + cid + ' - SC';
+  $('c-end').value = e;
+}
+
+async function buscarRua() {
+  const box = $('c-sug'); if (!box) return;
+  const cidade = $('c-cidade').value, q = tira($('c-rua').value);
+  if (!cidade || q.length < 3) { box.innerHTML = ''; return; }
+  const req = ++ruaReq;
+  box.innerHTML = '<p class="text-xs text-white/50 py-1">Buscando ruas…</p>';
+  try {
+    const r = await fetch('https://viacep.com.br/ws/SC/' + encodeURIComponent(semAcento(cidade)) + '/' + encodeURIComponent(semAcento(q)) + '/json/');
+    if (!r.ok) throw new Error('http ' + r.status);
+    const d = await r.json();
+    if (req !== ruaReq) return;
+    const vistos = new Set(); sugestoesRua = [];
+    (Array.isArray(d) ? d : []).forEach(x => {
+      const k = x.logradouro + '|' + x.bairro;
+      if (x.logradouro && !vistos.has(k)) { vistos.add(k); sugestoesRua.push(x); }
+    });
+    sugestoesRua = sugestoesRua.slice(0, 8);
+    box.innerHTML = sugestoesRua.length
+      ? sugestoesRua.map((x, i) => `<button type="button" data-act="sug-rua" data-i="${i}" class="w-full text-left px-3 py-2 rounded-lg bg-white/10 hover:bg-white/20 mb-1"><span class="font-medium">${esc(x.logradouro)}</span>${x.bairro ? `<span class="text-white/60 text-sm"> · ${esc(x.bairro)}</span>` : ''}</button>`).join('')
+      : '<p class="text-xs text-white/50 py-1">Não achei essa rua na lista. Pode digitar o endereço mesmo assim.</p>';
+  } catch (e) {
+    if (req === ruaReq) box.innerHTML = '<p class="text-xs text-white/50 py-1">A busca de ruas não está disponível agora. Digite o endereço completo.</p>';
+  }
+}
+
+function escolherRua(i) {
+  const x = sugestoesRua[i]; if (!x) return;
+  $('c-rua').value = x.logradouro;
+  if (x.bairro) $('c-bairro').value = x.bairro;
+  $('c-sug').innerHTML = '';
+  comporEndereco();
+  $('c-num').focus();
+}
+
+document.addEventListener('input', (e) => {
+  const id = e.target.id;
+  if (id === 'c-rua') { clearTimeout(ruaTimer); ruaTimer = setTimeout(buscarRua, 450); comporEndereco(); }
+  else if (id === 'c-num' || id === 'c-bairro' || id === 'c-compl') comporEndereco();
+});
+document.addEventListener('change', (e) => {
+  if (e.target.id === 'c-cidade') { buscarRua(); comporEndereco(); }
+});
+
 function abrirCheckout() {
   const m = sessao?.user?.user_metadata || {};
   modal(`
@@ -506,8 +567,22 @@ function abrirCheckout() {
     <input id="c-nome" value="${esc(m.nome || '')}">
     <label>WhatsApp (com DDD)</label>
     <input id="c-whats" inputmode="tel" value="${esc(m.whatsapp || '')}">
-    <label>Endereço de entrega</label>
-    <textarea id="c-end" rows="2">${esc(m.endereco || '')}</textarea>
+    <label>Cidade da entrega</label>
+    <select id="c-cidade">
+      <option value="">Selecione a cidade</option>
+      ${CIDADES_ENTREGA.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}
+    </select>
+    <label>Rua (comece a digitar e escolha na lista)</label>
+    <input id="c-rua" autocomplete="off" placeholder="Ex: Rua das Flores">
+    <div id="c-sug" class="mt-1"></div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label>Número</label><input id="c-num" inputmode="numeric" autocomplete="off"></div>
+      <div><label>Bairro</label><input id="c-bairro" autocomplete="off"></div>
+    </div>
+    <label>Complemento ou ponto de referência (opcional)</label>
+    <input id="c-compl" autocomplete="off" placeholder="Ex: apto 12, casa azul">
+    <label>Endereço que será enviado (confira)</label>
+    <textarea id="c-end" rows="3">${esc(m.endereco || '')}</textarea>
     <label>Forma de pagamento (pago na entrega)</label>
     <select id="c-pag" onchange="$('c-troco-wrap').style.display = this.value === 'dinheiro' ? 'block' : 'none'">
       <option value="pix">PIX</option>
@@ -570,7 +645,7 @@ async function confirmarPedido() {
 
   let msg = '*Novo pedido*\n\n' + itens.join('\n') + '\n\nSubtotal: ' + fmt(subtotal());
   if (taxa) msg += '\nTaxa da maquininha: ' + fmt(taxa);
-  msg += '\n*Total: ' + fmt(total) + '*\n\nCliente: ' + nome + '\nWhatsApp: ' + whats + '\nEndereço: ' + end + '\nPagamento: ' + rotulo;
+  msg += '\n*Total: ' + fmt(total) + '*\n\nCliente: ' + nome + '\nWhatsApp: ' + whats + '\nEndereço: ' + end + '\nMapa: ' + linkMapa(end) + '\nPagamento: ' + rotulo;
   if (troco) msg += '\nTroco para: ' + fmt(troco);
 
   const url = 'https://wa.me/' + config.whatsapp + '?text=' + encodeURIComponent(msg);
@@ -663,7 +738,7 @@ async function renderPedidos() {
         <p class="font-semibold">${esc(p.cliente_nome)} · ${esc(p.whatsapp)}</p>
         <p class="text-sm text-white/60">${new Date(p.created_at).toLocaleString('pt-BR')}</p>
       </div>
-      <p class="text-sm text-white/80 mt-1">${esc(p.endereco)}</p>
+      <p class="text-sm text-white/80 mt-1"><a href="${linkMapa(p.endereco)}" target="_blank" rel="noopener" class="underline">📍 ${esc(p.endereco)}</a></p>
       <ul class="text-sm mt-2 list-disc list-inside">${(p.itens || []).map(i => `<li>${esc(i)}</li>`).join('')}</ul>
       <p class="mt-2">Total: <b>${fmt(p.total)}</b> · ${esc(p.forma_pagamento)}${p.troco ? ' · troco para ' + fmt(p.troco) : ''}</p>
       <div class="flex gap-2 mt-3 flex-wrap">
@@ -909,6 +984,7 @@ document.addEventListener('click', async (e) => {
   else if (a === 'remover') { carrinho = carrinho.filter(i => i.id !== id); abrirCarrinho(); }
   else if (a === 'checkout') iniciarCheckout();
   else if (a === 'confirmar') confirmarPedido();
+  else if (a === 'sug-rua') escolherRua(Number(el.dataset.i));
   else if (a === 'fechar') fecharModal();
 
   else if (a === 'login-abrir') abrirLogin('entrar');
