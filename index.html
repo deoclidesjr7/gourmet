@@ -87,6 +87,12 @@ async function carregarDados() {
   });
 }
 
+const numPedido = n => n ? '#' + String(n).padStart(2, '0') : '';
+const linkZap = w => {
+  let d = String(w || '').replace(/\D/g, '');
+  if (d.length === 10 || d.length === 11) d = '55' + d;
+  return 'https://wa.me/' + d;
+};
 const linkMapa = end => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(String(end || '').replace(/\s+/g, ' ').trim());
 
 async function gravar(key, value) {
@@ -622,7 +628,7 @@ async function confirmarPedido() {
   const itensGuardados = carrinho.map(i => ({ id: i.id, qtd: i.qtd }));
 
   const win = window.open('', '_blank');
-  const { error } = await sb.from('gourmet_pedidos').insert({
+  const { data: ped, error } = await sb.from('gourmet_pedidos').insert({
     user_id: sessao.user.id,
     cliente_nome: nome,
     whatsapp: whats,
@@ -632,7 +638,7 @@ async function confirmarPedido() {
     total,
     forma_pagamento: rotulo,
     troco
-  });
+  }).select('numero').single();
 
   if (error) {
     if (win) win.close();
@@ -643,9 +649,9 @@ async function confirmarPedido() {
 
   sb.auth.updateUser({ data: { nome, whatsapp: whats, endereco: end } }).catch(() => {});
 
-  let msg = '*Novo pedido*\n\n' + itens.join('\n') + '\n\nSubtotal: ' + fmt(subtotal());
+  let msg = '*Novo pedido*\n' + (ped && ped.numero ? '*' + numPedido(ped.numero) + '*\n' : '') + '\n' + itens.join('\n') + '\n\nSubtotal: ' + fmt(subtotal());
   if (taxa) msg += '\nTaxa da maquininha: ' + fmt(taxa);
-  msg += '\n*Total: ' + fmt(total) + '*\n\nCliente: ' + nome + '\nWhatsApp: ' + whats + '\nEndereço: ' + end + '\nMapa: ' + linkMapa(end) + '\nPagamento: ' + rotulo;
+  msg += '\n*Total: ' + fmt(total) + '*\n\nCliente: ' + nome + '\nWhatsApp: ' + whats + '\nConversar: ' + linkZap(whats) + '\nEndereço: ' + end + '\nMapa: ' + linkMapa(end) + '\nPagamento: ' + rotulo;
   if (troco) msg += '\nTroco para: ' + fmt(troco);
 
   const url = 'https://wa.me/' + config.whatsapp + '?text=' + encodeURIComponent(msg);
@@ -735,7 +741,7 @@ async function renderPedidos() {
   $('lista-pedidos').innerHTML = data.length ? data.map(p => `
     <div class="border border-white/15 rounded-xl p-4">
       <div class="flex justify-between flex-wrap gap-2">
-        <p class="font-semibold">${esc(p.cliente_nome)} · ${esc(p.whatsapp)}</p>
+        <p class="font-semibold">${p.numero ? '<span class="opacity-70">' + numPedido(p.numero) + '</span> · ' : ''}${esc(p.cliente_nome)} · <a href="${linkZap(p.whatsapp)}" target="_blank" rel="noopener" class="underline">${esc(p.whatsapp)}</a></p>
         <p class="text-sm text-white/60">${new Date(p.created_at).toLocaleString('pt-BR')}</p>
       </div>
       <p class="text-sm text-white/80 mt-1"><a href="${linkMapa(p.endereco)}" target="_blank" rel="noopener" class="underline">📍 ${esc(p.endereco)}</a></p>
