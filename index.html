@@ -62,6 +62,8 @@ let produtos = [];
 let carrinho = [];
 let sessao = null;
 let adminTab = 'pedidos';
+let relPeriodo = '30';
+let relDados = null;
 let prodEditando = null;
 let canal = null;
 let modalTipo = null, modalCat = null;   // para saber se o catálogo está aberto
@@ -719,11 +721,11 @@ async function renderAdmin() {
     return;
   }
 
-  const abas = [['pedidos', 'Pedidos'], ['aparencia', 'Aparência'], ['produtos', 'Produtos']];
+  const abas = [['pedidos', 'Pedidos'], ['aparencia', 'Aparência'], ['produtos', 'Produtos'], ['relatorios', 'Relatórios']];
   $('app').innerHTML = `
   <div class="min-h-screen p-5 max-w-3xl mx-auto">
     <div class="flex justify-between items-center mb-5 flex-wrap gap-3">
-      <h1 class="serif text-4xl">Painel</h1>
+      <div class="flex items-baseline gap-3 flex-wrap"><h1 class="serif text-4xl">Painel</h1><span class="text-white/70 text-sm">${esc(nomeCliente())}</span></div>
       <div class="flex gap-2 flex-wrap">
         ${abas.map(([k, n]) => `<button class="${adminTab === k ? 'btn' : 'btn2'}" data-act="admin-tab" data-val="${k}">${n}</button>`).join('')}
         <a class="btn2" href="#">Ver site</a>
@@ -736,6 +738,128 @@ async function renderAdmin() {
   if (adminTab === 'pedidos') await renderPedidos();
   if (adminTab === 'aparencia') renderAparencia();
   if (adminTab === 'produtos') renderProdutos();
+  if (adminTab === 'relatorios') await renderRelatorios();
+}
+
+/* ---------- admin: relatórios ---------- */
+async function renderRelatorios() {
+  const periodos = [['1', 'Hoje'], ['7', '7 dias'], ['30', '30 dias'], ['0', 'Tudo']];
+  $('admin-conteudo').innerHTML = `
+    <div class="glass rounded-2xl p-5">
+      <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
+        <h2 class="text-xl font-semibold">Relatórios e métricas</h2>
+        <div class="flex gap-2 flex-wrap">
+          ${periodos.map(([k, n]) => `<button class="${relPeriodo === k ? 'btn' : 'btn2'}" data-act="rel-periodo" data-val="${k}">${n}</button>`).join('')}
+          <button class="btn2" data-act="rel-baixar">Baixar planilha</button>
+        </div>
+      </div>
+      <div id="rel-corpo"><p class="text-white/60">Carregando...</p></div>
+    </div>`;
+
+  let q = sb.from('gourmet_pedidos').select('*').order('created_at', { ascending: false }).limit(2000);
+  if (relPeriodo !== '0') {
+    const ini = new Date();
+    ini.setHours(0, 0, 0, 0);
+    ini.setDate(ini.getDate() - (Number(relPeriodo) - 1));
+    q = q.gte('created_at', ini.toISOString());
+  }
+  const { data, error } = await q;
+  if (error) {
+    $('rel-corpo').innerHTML = `<p class="text-red-400">Erro ao carregar: ${esc(error.message)}</p>`;
+    return;
+  }
+
+  const todos = data || [];
+  const validos = todos.filter(p => p.status !== 'cancelado');
+  const cancelados = todos.length - validos.length;
+  const faturamento = validos.reduce((t, p) => t + (Number(p.total) || 0), 0);
+  const ticket = validos.length ? faturamento / validos.length : 0;
+
+  const prods = {};
+  validos.forEach(p => (p.itens || []).forEach(linha => {
+    const m = String(linha).match(/^(\d+)x (.+) \(R\$ ([\d.,]+)\)$/);
+    if (!m) return;
+    const nome = m[2];
+    const valor = Number(m[3].replace(/\./g, '').replace(',', '.')) || 0;
+    if (!prods[nome]) prods[nome] = { qtd: 0, valor: 0 };
+    prods[nome].qtd += Number(m[1]);
+    prods[nome].valor += valor;
+  }));
+  const topProds = Object.entries(prods).sort((a, b) => b[1].qtd - a[1].qtd).slice(0, 10);
+
+  const pags = {};
+  validos.forEach(p => {
+    const k = p.forma_pagamento || 'Não informado';
+    if (!pags[k]) pags[k] = { qtd: 0, valor: 0 };
+    pags[k].qtd += 1;
+    pags[k].valor += Number(p.total) || 0;
+  });
+  const listaPags = Object.entries(pags).sort((a, b) => b[1].qtd - a[1].qtd);
+
+  const clientes = {};
+  validos.forEach(p => {
+    const k = p.user_id || p.whatsapp;
+    if (!clientes[k]) clientes[k] = { nome: p.cliente_nome, whatsapp: p.whatsapp, qtd: 0, valor: 0 };
+    clientes[k].qtd += 1;
+    clientes[k].valor += Number(p.total) || 0;
+  });
+  const topClientes = Object.values(clientes).sort((a, b) => b.valor - a.valor).slice(0, 10);
+
+  relDados = {
+    periodo: (periodos.find(x => x[0] === relPeriodo) || [0, ''])[1],
+    faturamento, pedidos: validos.length, cancelados, ticket, topProds, listaPags, topClientes
+  };
+
+  const linha = (esq, dir) => `<div class="flex justify-between gap-3 py-2 border-b border-white/10 text-sm"><span>${esq}</span><span class="text-white/80 text-right">${dir}</span></div>`;
+  const vazio = '<p class="text-white/60 text-sm">Sem dados neste período.</p>';
+
+  $('rel-corpo').innerHTML = `
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+      <div class="border border-white/15 rounded-xl p-4"><p class="text-white/60 text-sm">Faturamento</p><p class="text-2xl font-semibold">${fmt(faturamento)}</p></div>
+      <div class="border border-white/15 rounded-xl p-4"><p class="text-white/60 text-sm">Pedidos</p><p class="text-2xl font-semibold">${validos.length}</p>${cancelados ? `<p class="text-white/50 text-xs">+ ${cancelados} cancelado(s), fora das contas</p>` : ''}</div>
+      <div class="border border-white/15 rounded-xl p-4"><p class="text-white/60 text-sm">Ticket médio</p><p class="text-2xl font-semibold">${fmt(ticket)}</p></div>
+    </div>
+
+    <h3 class="font-semibold mb-2">Produtos mais vendidos</h3>
+    <div class="mb-6">${topProds.length ? topProds.map(([n, d], i) => linha((i + 1) + '. ' + esc(n), d.qtd + ' un. · ' + fmt(d.valor))).join('') : vazio}</div>
+
+    <h3 class="font-semibold mb-2">Formas de pagamento</h3>
+    <div class="mb-6">${listaPags.length ? listaPags.map(([n, d]) => linha(esc(n), d.qtd + ' pedido(s) · ' + fmt(d.valor))).join('') : vazio}</div>
+
+    <h3 class="font-semibold mb-2">Clientes que mais compram</h3>
+    <div>${topClientes.length ? topClientes.map((c, i) => linha((i + 1) + '. ' + esc(c.nome) + ' · <a href="' + linkZap(c.whatsapp) + '" target="_blank" rel="noopener" class="underline">' + esc(c.whatsapp) + '</a>', c.qtd + ' pedido(s) · ' + fmt(c.valor))).join('') : vazio}</div>`;
+}
+
+function baixarRelatorio() {
+  if (!relDados) { alert('Abra a aba Relatórios e espere carregar.'); return; }
+  const d = relDados;
+  const n = v => Number(v || 0).toFixed(2).replace('.', ',');
+  const c = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+  const L = [];
+  L.push([c('Relatório - ' + d.periodo)].join(';'));
+  L.push('');
+  L.push([c('Faturamento (R$)'), n(d.faturamento)].join(';'));
+  L.push([c('Pedidos'), d.pedidos].join(';'));
+  L.push([c('Pedidos cancelados (fora das contas)'), d.cancelados].join(';'));
+  L.push([c('Ticket médio (R$)'), n(d.ticket)].join(';'));
+  L.push('');
+  L.push([c('Produtos mais vendidos'), c('Quantidade'), c('Valor (R$)')].join(';'));
+  d.topProds.forEach(([nome, x]) => L.push([c(nome), x.qtd, n(x.valor)].join(';')));
+  L.push('');
+  L.push([c('Formas de pagamento'), c('Pedidos'), c('Valor (R$)')].join(';'));
+  d.listaPags.forEach(([nome, x]) => L.push([c(nome), x.qtd, n(x.valor)].join(';')));
+  L.push('');
+  L.push([c('Clientes que mais compram'), c('WhatsApp'), c('Pedidos'), c('Valor (R$)')].join(';'));
+  d.topClientes.forEach(x => L.push([c(x.nome), c(x.whatsapp), x.qtd, n(x.valor)].join(';')));
+
+  const blob = new Blob(['\ufeff' + L.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'relatorio-atelie.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
 /* ---------- admin: pedidos ---------- */
@@ -1027,6 +1151,8 @@ document.addEventListener('click', async (e) => {
   }
 
   else if (a === 'admin-login') entrarAdmin();
+  else if (a === 'rel-baixar') baixarRelatorio();
+  else if (a === 'rel-periodo') { relPeriodo = v; renderRelatorios(); }
   else if (a === 'admin-tab') { adminTab = v; prodEditando = null; renderAdmin(); }
   else if (a === 'status') mudarStatus(id, v);
   else if (a === 'notif') ativarNotificacoes();
