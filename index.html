@@ -244,11 +244,11 @@ function renderSite() {
 }
 
 /* ---------- modal ---------- */
-function modal(html) {
+function modal(html, larga) {
   modalTipo = null;
   $('modal').innerHTML = `
     <div class="fixed inset-0 z-[60] bg-black/85 overflow-y-auto p-4" onclick="if(event.target===this)fecharModal()">
-      <div class="glass bg-zinc-950 max-w-lg mx-auto mt-10 rounded-2xl p-6">${html}</div>
+      <div class="glass bg-zinc-950 ${larga ? 'max-w-lg md:max-w-4xl' : 'max-w-lg'} mx-auto mt-10 rounded-2xl p-6">${html}</div>
     </div>`;
 }
 function fecharModal() { $('modal').innerHTML = ''; modalTipo = null; }
@@ -452,14 +452,14 @@ function abrirCatalogo(cat) {
         return `<button class="${ativo ? 'btn' : 'btn2'} whitespace-nowrap" data-act="catalogo" data-val="${c === 'Todos' ? '' : esc(c)}">${esc(c)}</button>`;
       }).join('')}
     </div>
-    <div class="grid grid-cols-2 gap-4">
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
       ${lista.length ? lista.map(p => `
         <button class="text-left glass rounded-xl overflow-hidden" data-act="ver" data-id="${esc(p.id)}">
           ${p.foto ? `<img loading="lazy" decoding="async" src="${esc(p.foto)}" class="w-full h-32 object-cover">` : '<div class="h-32 bg-white/10"></div>'}
           <div class="p-3"><p class="font-medium">${esc(p.nome)}</p><p class="text-white/70 text-sm">${fmt(p.preco)}</p></div>
         </button>`).join('')
-        : '<p class="text-white/60 col-span-2">Nenhum produto nesta categoria ainda.</p>'}
-    </div>`);
+        : '<p class="text-white/60 col-span-2 md:col-span-3">Nenhum produto nesta categoria ainda.</p>'}
+    </div>`, true);
   modalTipo = 'catalogo'; modalCat = catAtiva;
 }
 
