@@ -448,7 +448,7 @@ function verProduto(id) {
     <p class="text-white/70 mt-2">${esc(p.descricao)}</p>
     <p class="text-2xl font-semibold mt-4">${fmt(p.preco)}</p>
     <label>Quantidade</label>
-    <input id="qtd-prod" type="number" min="1" value="1">
+    <input id="qtd-prod" type="number" min="1" value="1" inputmode="numeric" style="width:12.5%;min-width:56px;text-align:left;padding-left:10px !important;padding-right:2px !important">
     <div class="flex gap-3 mt-5 flex-wrap">
       <button class="btn" data-act="add" data-id="${esc(p.id)}">Adicionar ao pedido</button>
       <button class="btn2" data-act="catalogo">Voltar</button>
