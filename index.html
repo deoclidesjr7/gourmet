@@ -17,6 +17,7 @@
 <link rel="icon" href="/favicon.ico" sizes="any">
 <link rel="icon" type="image/png" sizes="192x192" href="/favicon.png">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@1&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
@@ -198,6 +199,8 @@ async function iniciar() {
   const { data } = await sb.auth.getSession();
   sessao = data.session;
   render();
+  iniciarAvisosCliente();
+  religarPush();
 }
 
 /* ---------- site ---------- */
@@ -341,6 +344,7 @@ async function salvarNovaSenha() {
   if (error) { $('n-erro').textContent = traduzErro(error); return; }
   const { data } = await sb.auth.getSession();
   sessao = data.session;
+  iniciarAvisosCliente();
   modal(`
     <h2 class="serif text-3xl mb-3">Senha alterada!</h2>
     <p class="text-white/70">Sua senha nova já está valendo e você já está dentro da sua conta.</p>
@@ -401,10 +405,14 @@ function concluirLogin() {
   const depois = pendingAfterLogin;
   pendingAfterLogin = null;
   render();
+  iniciarAvisosCliente();
+  religarPush();
   if (depois) depois();
 }
 
 async function sair() {
+  pararAvisosCliente();
+  await soltarPush();
   await sb.auth.signOut();
   sessao = null;
   if (canal) { sb.removeChannel(canal); canal = null; }
@@ -435,6 +443,7 @@ async function renderConta() {
     <div class="flex justify-between items-center mb-6 flex-wrap gap-3">
       <h1 class="serif text-4xl">Olá, ${esc(nomeCliente())}</h1>
       <div class="flex gap-2 flex-wrap">
+        <button class="btn2" data-act="push-ativar">Ativar avisos de pedido</button>
         <button class="btn2" data-act="catalogo">Ver catálogo</button>
         <a class="btn2" href="#">Voltar ao site</a>
         <button class="btn2" data-act="sair">Sair</button>
@@ -478,8 +487,75 @@ async function cancelarMeuPedido(id) {
     alert('Não foi possível cancelar. O pedido pode já estar em preparo. Fale com a loja pelo WhatsApp.');
     return;
   }
+  statusConhecido[id] = 'cancelado';
   renderConta();
 }
+
+/* ---------- avisos de status para o cliente ---------- */
+let statusConhecido = {}, canalCliente = null;
+const ehClienteComum = () => sessao && !isAdminEmail(sessao.user.email);
+
+function mostrarAviso(texto) {
+  let box = document.getElementById('aviso-status');
+  if (box) box.remove();
+  box = document.createElement('div');
+  box.id = 'aviso-status';
+  box.className = 'fixed top-4 left-1/2 -translate-x-1/2 z-[80] w-[92vw] max-w-md rounded-2xl p-4 bg-zinc-950 border border-white/20 shadow-lg text-center cursor-pointer';
+  box.innerHTML = '<p class="font-semibold">' + esc(texto) + '</p><p class="text-xs text-white/50 mt-1">Toque para fechar</p>';
+  box.onclick = () => box.remove();
+  document.body.appendChild(box);
+  setTimeout(() => { if (box.isConnected) box.remove(); }, 10000);
+  try { if (navigator.vibrate) navigator.vibrate(200); } catch (e) {}
+  tocarSuave();
+}
+
+function textoStatus(p) {
+  const n = numPedido(p.numero);
+  const nome = n ? 'Seu pedido ' + n : 'Seu pedido';
+  if (p.status === 'preparando') return nome + ' está sendo preparado.';
+  if (p.status === 'entregue') return nome + ' foi entregue. Bom apetite!';
+  if (p.status === 'cancelado') return nome + ' foi cancelado.';
+  return '';
+}
+
+function registrarStatus(p, silencioso) {
+  if (!p || p.id === undefined) return;
+  const antes = statusConhecido[p.id] ?? (silencioso ? p.status : 'novo');
+  statusConhecido[p.id] = p.status;
+  if (silencioso || antes === p.status) return;
+  const txt = textoStatus(p);
+  if (txt) mostrarAviso(txt);
+  if (location.hash === '#conta') renderConta();
+}
+
+async function carregarStatusCliente(primeira) {
+  if (!ehClienteComum()) return;
+  try {
+    const { data, error } = await sb.from('gourmet_pedidos')
+      .select('id,numero,status').eq('user_id', sessao.user.id)
+      .order('created_at', { ascending: false }).limit(50);
+    if (error || !data) return;
+    data.forEach(p => registrarStatus(p, primeira));
+  } catch (e) { console.warn(e); }
+}
+
+async function iniciarAvisosCliente() {
+  if (!ehClienteComum()) return;
+  await carregarStatusCliente(true);
+  if (canalCliente) return;
+  canalCliente = sb.channel('cliente-pedidos-' + sessao.user.id)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'gourmet_pedidos', filter: 'user_id=eq.' + sessao.user.id },
+      payload => registrarStatus(payload.new, false))
+    .subscribe();
+}
+
+function pararAvisosCliente() {
+  if (canalCliente) { sb.removeChannel(canalCliente); canalCliente = null; }
+  statusConhecido = {};
+}
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden) carregarStatusCliente(false); });
+setInterval(() => { if (!document.hidden) carregarStatusCliente(false); }, 45000);
 
 function reorderPedido(id) {
   const p = meusPedidos.find(x => x.id === id);
@@ -993,21 +1069,126 @@ function ligarTempoReal() {
     .subscribe();
 }
 
+/* ---------- sons ---------- */
+let audioCtx = null;
+function audio() {
+  try {
+    if (!audioCtx) {
+      const C = window.AudioContext || window.webkitAudioContext;
+      if (!C) return null;
+      audioCtx = new C();
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    return audioCtx;
+  } catch (e) { return null; }
+}
+['click', 'touchstart', 'keydown'].forEach(ev => document.addEventListener(ev, audio, { once: true, passive: true }));
+
+function nota(freq, inicio, dur, vol, tipo) {
+  const ctx = audio(); if (!ctx) return;
+  const o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = tipo || 'sine';
+  o.frequency.value = freq;
+  o.connect(g); g.connect(ctx.destination);
+  const t = ctx.currentTime + inicio;
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.start(t); o.stop(t + dur + 0.05);
+}
+
+// admin: duas notas subindo (ding-dong), mais chamativo
 function tocar() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.connect(g); g.connect(ctx.destination);
-    o.frequency.value = 880; g.gain.value = 0.2;
-    o.start(); o.stop(ctx.currentTime + 0.4);
+    nota(784, 0, 0.3, 0.35, 'triangle');
+    nota(1047, 0.28, 0.5, 0.35, 'triangle');
   } catch (e) {}
 }
 
-function ativarNotificacoes() {
-  if (!window.Notification) { alert('Seu navegador não suporta notificações.'); return; }
-  Notification.requestPermission().then(r =>
-    alert(r === 'granted' ? 'Notificações ativadas.' : 'Permissão negada no navegador.'));
+// cliente: duas notas suaves quando o status do pedido muda
+function tocarSuave() {
+  try {
+    nota(659, 0, 0.5, 0.12, 'sine');
+    nota(880, 0.22, 0.8, 0.12, 'sine');
+  } catch (e) {}
+}
+
+function ativarNotificacoes() { ativarPush(); }
+
+/* ---------- push: avisos com o site fechado ---------- */
+const VAPID_PUBLIC = 'BDbNfsOnrIi24AqJ20_gjc5EKiaTmohTXhoLfnA2-YOVQrJSU-xbOX7haKpHYjKrJBCQyU6UDIyxmVWiAVOdY9I';
+const b64ParaU8 = b64 => {
+  const pad = '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+};
+const pushSuportado = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const modoApp = () => (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+const ehIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+async function salvarAssinatura(sub) {
+  const j = sub.toJSON();
+  const { error } = await sb.rpc('salvar_push', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth });
+  if (error) throw error;
+}
+
+async function ativarPush() {
+  if (!sessao) { abrirLogin('entrar', 'Entre na sua conta para ativar os avisos de pedido.'); return; }
+  if (ehIOS() && !modoApp()) {
+    modal(`
+      <h2 class="serif text-3xl mb-3">Avisos no iPhone</h2>
+      <p class="text-white/70">No iPhone, os avisos só funcionam se o site estiver na tela inicial:</p>
+      <ol class="text-white/80 mt-3 space-y-1 list-decimal list-inside">
+        <li>Abra este site no <b>Safari</b>.</li>
+        <li>Toque no botão de <b>compartilhar</b> (quadrado com seta).</li>
+        <li>Toque em <b>Adicionar à Tela de Início</b>.</li>
+        <li>Abra o site pelo <b>ícone novo</b> e toque de novo em "Ativar avisos de pedido".</li>
+      </ol>
+      <button class="btn mt-5" data-act="fechar">Entendi</button>`);
+    return;
+  }
+  if (!pushSuportado()) { alert('Este navegador não consegue receber avisos com o site fechado.'); return; }
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { alert('Os avisos não foram permitidos. Libere nas configurações do navegador.'); return; }
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ParaU8(VAPID_PUBLIC) });
+    await salvarAssinatura(sub);
+    alert('Avisos ativados! Você será avisado mesmo com o site fechado.');
+  } catch (e) {
+    console.warn(e);
+    alert('Não foi possível ativar os avisos agora. Tente de novo.');
+  }
+}
+
+// religa o aparelho à conta atual (ex.: depois de entrar de novo)
+async function religarPush() {
+  try {
+    if (!sessao || !pushSuportado() || Notification.permission !== 'granted') return;
+    const reg = await navigator.serviceWorker.getRegistration('/');
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) await salvarAssinatura(sub);
+  } catch (e) { console.warn(e); }
+}
+
+async function soltarPush() {
+  try {
+    if (!pushSuportado()) return;
+    const reg = await navigator.serviceWorker.getRegistration('/');
+    const sub = reg && await reg.pushManager.getSubscription();
+    if (sub) await sb.rpc('remover_push', { p_endpoint: sub.endpoint });
+  } catch (e) { console.warn(e); }
+}
+
+// ao tocar na notificação, o aparelho abre o site na tela certa sem recarregar
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', e => {
+    if (e.data && e.data.url) {
+      try { location.hash = new URL(e.data.url, location.origin).hash || ''; } catch (_) {}
+    }
+  });
 }
 
 /* ---------- admin: aparência ---------- */
@@ -1233,6 +1414,7 @@ document.addEventListener('click', async (e) => {
   else if (a === 'admin-tab') { adminTab = v; prodEditando = null; renderAdmin(); }
   else if (a === 'status') mudarStatus(id, v);
   else if (a === 'notif') ativarNotificacoes();
+  else if (a === 'push-ativar') ativarPush();
   else if (a === 'config-salvar') salvarConfig();
   else if (a === 'prod-novo') { prodEditando = { id: null }; renderAdmin(); }
   else if (a === 'prod-editar') { prodEditando = produtos.find(p => p.id === id) || null; renderAdmin(); }
