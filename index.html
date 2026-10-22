@@ -75,6 +75,11 @@ const fmt = v => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
 const novoId = () => 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const subtotal = () => carrinho.reduce((s, i) => s + i.preco * i.qtd, 0);
 const qtdCarrinho = () => carrinho.reduce((s, i) => s + i.qtd, 0);
+function atualizarContador() {
+  document.querySelectorAll('[data-act="carrinho"]').forEach(b => {
+    if (b.textContent.trim().startsWith('Carrinho (')) b.textContent = 'Carrinho (' + qtdCarrinho() + ')';
+  });
+}
 const nomeCliente = () => sessao?.user?.user_metadata?.nome || sessao?.user?.email || '';
 
 /* ---------- dados ---------- */
@@ -406,6 +411,7 @@ function reorderPedido(id) {
     return;
   }
   carrinho = novo;
+  atualizarContador();
   if (indisponiveis) alert(indisponiveis + ' item(ns) deste pedido não está(ão) mais disponível(is) e foram removidos.');
   location.hash = '';
   render();
@@ -472,6 +478,7 @@ function alterarQtd(id, delta) {
 }
 
 function abrirCarrinho() {
+  atualizarContador();
   if (!carrinho.length) {
     modal(`
       <h2 class="serif text-3xl mb-4">Carrinho</h2>
@@ -658,6 +665,7 @@ async function confirmarPedido() {
   if (win) win.location.href = url; else location.href = url;
 
   carrinho = [];
+  atualizarContador();
   modal(`
     <h2 class="serif text-3xl mb-2">Pedido enviado!</h2>
     <p class="text-white/70">Confirme o envio da mensagem no WhatsApp para a loja. Você também pode acompanhar o pedido em <b>Minha conta</b>.</p>
