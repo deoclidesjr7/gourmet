@@ -63,6 +63,7 @@ let sessao = null;
 let adminTab = 'pedidos';
 let prodEditando = null;
 let canal = null;
+let modalTipo = null, modalCat = null;   // para saber se o catálogo está aberto
 let pendingAfterLogin = null;
 let meusPedidos = [];
 
@@ -120,6 +121,37 @@ function tocarVideos() {
 // se o iPhone bloquear o autoplay (economia de bateria), tenta de novo no 1º toque
 document.addEventListener('touchstart', tocarVideos, { once: true, passive: true });
 window.addEventListener('hashchange', render);
+
+/* ---------- atualização automática (produtos e aparência) ---------- */
+let atualizando = false;
+async function atualizarVivo() {
+  if (atualizando || document.hidden || location.hash === '#admin') return;
+  atualizando = true;
+  try {
+    const { data, error } = await sb.from('gourmet_data').select('key,value');
+    if (error || !data) return;
+    let novaConfig = config, novosProdutos = produtos;
+    data.forEach(r => {
+      if (r.key === 'config') novaConfig = { ...CONFIG_PADRAO, ...r.value };
+      if (r.key === 'produtos') novosProdutos = Array.isArray(r.value) ? r.value : [];
+    });
+    const configMudou = JSON.stringify(novaConfig) !== JSON.stringify(config);
+    const produtosMudou = JSON.stringify(novosProdutos) !== JSON.stringify(produtos);
+    if (!configMudou && !produtosMudou) return;
+    config = novaConfig; produtos = novosProdutos;
+    if (modalTipo === 'catalogo') {                       // catálogo aberto: atualiza no lugar, mantendo a rolagem
+      const antes = $('modal').firstElementChild;
+      const y = antes ? antes.scrollTop : 0;
+      abrirCatalogo(modalCat);
+      const depois = $('modal').firstElementChild;
+      if (depois) depois.scrollTop = y;
+    } else if (configMudou && !$('modal').innerHTML.trim() && location.hash === '') {
+      render();                                           // tela inicial sem nada aberto: aplica a nova aparência
+    }
+  } catch (e) { console.warn(e); } finally { atualizando = false; }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) atualizarVivo(); });
+setInterval(atualizarVivo, 60000);
 
 async function iniciar() {
   await carregarDados();
@@ -189,12 +221,13 @@ function renderSite() {
 
 /* ---------- modal ---------- */
 function modal(html) {
+  modalTipo = null;
   $('modal').innerHTML = `
     <div class="fixed inset-0 z-[60] bg-black/85 overflow-y-auto p-4" onclick="if(event.target===this)fecharModal()">
       <div class="glass bg-zinc-950 max-w-lg mx-auto mt-10 rounded-2xl p-6">${html}</div>
     </div>`;
 }
-function fecharModal() { $('modal').innerHTML = ''; }
+function fecharModal() { $('modal').innerHTML = ''; modalTipo = null; }
 
 function campoSenha(id) {
   return `<div class="campo-senha relative"><input id="${id}" type="password"><button type="button" data-act="toggle-senha" class="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-zinc-700 hover:text-black">Mostrar</button></div>`;
@@ -391,6 +424,7 @@ function abrirCatalogo(cat) {
         </button>`).join('')
         : '<p class="text-white/60 col-span-2">Nenhum produto nesta categoria ainda.</p>'}
     </div>`);
+  modalTipo = 'catalogo'; modalCat = catAtiva;
 }
 
 function verProduto(id) {
