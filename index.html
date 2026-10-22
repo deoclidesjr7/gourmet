@@ -25,6 +25,11 @@
   input, textarea, select { color: #000 !important; background: #fff !important; border-radius: 10px; padding: 10px 14px !important; width: 100%; box-sizing: border-box; font-size: 16px !important; }
   select option { color: #000; background: #fff; }
   .campo-senha input { padding-right: 78px !important; }
+  .rolagem-fina { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.4) transparent; }
+  .rolagem-fina::-webkit-scrollbar { height: 4px; background: transparent; }
+  .rolagem-fina::-webkit-scrollbar-track { background: transparent; }
+  .rolagem-fina::-webkit-scrollbar-thumb { background: rgba(255,255,255,.4); border-radius: 4px; }
+  .rolagem-fina::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   label { display: block; font-size: 12px; color: rgba(255,255,255,.7); margin: 10px 0 4px; }
   .btn { background: #fff; color: #000; border-radius: 999px; padding: 10px 18px; font-weight: 600; cursor: pointer; border: none; white-space: nowrap; }
   .btn2 { background: rgba(255,255,255,.1); color: #fff; border-radius: 999px; padding: 8px 14px; cursor: pointer; border: 1px solid rgba(255,255,255,.2); white-space: nowrap; text-decoration: none; display: inline-block; }
@@ -441,7 +446,7 @@ function abrirCatalogo(cat) {
       <h2 class="serif text-3xl">Catálogo</h2>
       <button class="btn2" data-act="carrinho">Carrinho (${qtdCarrinho()})</button>
     </div>
-    <div class="flex gap-2 overflow-x-auto pb-2 mb-4">
+    <div class="rolagem-fina flex gap-2 overflow-x-auto pb-2 mb-4">
       ${tabs.map(c => {
         const ativo = (c === 'Todos' && !catAtiva) || c === catAtiva;
         return `<button class="${ativo ? 'btn' : 'btn2'} whitespace-nowrap" data-act="catalogo" data-val="${c === 'Todos' ? '' : esc(c)}">${esc(c)}</button>`;
