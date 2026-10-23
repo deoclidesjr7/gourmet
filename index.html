@@ -128,11 +128,42 @@ async function carregarDados() {
 }
 
 const normTxt = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
-// devolve o valor do frete (número, pode ser 0) ou null se cidade/bairro não estiverem na lista
-function freteDe(cidade, bairro) {
+// procura o frete cadastrado para uma cidade + bairro (devolve o item ou null)
+function buscarFrete(cidade, bairro) {
   const c = normTxt(cidade), b = normTxt(bairro);
   if (!c || !b) return null;
-  const f = fretes.find(x => normTxt(x.cidade) === c && normTxt(x.bairro) === b);
+  return fretes.find(x => normTxt(x.cidade) === c && normTxt(x.bairro) === b) || null;
+}
+// lê cidade e bairro direto do texto do endereço (ex.: "Rua X, 10 - compl - Bairro, Cidade - SC")
+function buscarFretePeloTexto(texto) {
+  const t = normTxt(texto);
+  if (!t) return null;
+  let cidade = null, pos = -1;
+  CIDADES_ENTREGA.forEach(c => {
+    const k = normTxt(c), i = t.lastIndexOf(k);
+    if (i > pos || (i === pos && cidade && k.length > normTxt(cidade).length)) { pos = i; cidade = c; }
+  });
+  if (!cidade || pos < 0) return null;
+  const candidatos = fretes.filter(f => normTxt(f.cidade) === normTxt(cidade));
+  if (!candidatos.length) return null;
+  const segs = t.slice(0, pos).split(/\s-\s|,/).map(x => x.trim()).filter(Boolean);
+  for (let k = segs.length - 1; k >= 0; k--) {          // 1) o trecho é exatamente o bairro
+    const f = candidatos.find(x => normTxt(x.bairro) === segs[k]);
+    if (f) return f;
+  }
+  const resto = segs.slice(1).join(' | ');                // 2) bairro citado no meio (sem contar o nome da rua)
+  const ordenados = [...candidatos].sort((a, b) => normTxt(b.bairro).length - normTxt(a.bairro).length);
+  return ordenados.find(f => {
+    const b = normTxt(f.bairro).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return b && new RegExp('(^|[^a-z0-9])' + b + '([^a-z0-9]|$)').test(resto);
+  }) || null;
+}
+// o que vale é o endereço que será enviado; se ele não revelar o bairro, usa os campos cidade/bairro
+function acharFrete(texto, cidade, bairro) {
+  return buscarFretePeloTexto(texto) || buscarFrete(cidade, bairro);
+}
+function freteDe(cidade, bairro) {
+  const f = buscarFrete(cidade, bairro);
   return f ? (Number(f.valor) || 0) : null;
 }
 const ehRetirada = p => (p.itens || []).some(l => /^retirada no local/i.test(String(l)));
@@ -811,6 +842,7 @@ document.addEventListener('input', (e) => {
   const id = e.target.id;
   if (id === 'c-rua') { clearTimeout(ruaTimer); ruaTimer = setTimeout(buscarRua, 450); comporEndereco(); }
   else if (id === 'c-num' || id === 'c-bairro' || id === 'c-compl') comporEndereco();
+  else if (id === 'c-end') atualizarResumo();
   else if (id === 't-cidade') {
     const cid = CIDADES_ENTREGA.find(c => normTxt(c) === normTxt(e.target.value));
     const dl = $('t-bairros');
@@ -892,13 +924,15 @@ function atualizarResumo() {
   const bai = $('c-bairro') ? tira($('c-bairro').value) : '';
   const pag = $('c-pag') ? $('c-pag').value : 'pix';
   const retirada = modoRetirada();
-  const f = retirada ? 0 : freteDe(cid, bai);
+  const textoEnd = $('c-end') ? tira($('c-end').value) : '';
+  const achado = retirada ? null : acharFrete(textoEnd, cid, bai);
+  const f = retirada ? 0 : (achado ? (Number(achado.valor) || 0) : null);
   const taxa = pag === 'cartao' ? (Number(config.taxaMaquininha) || 0) : 0;
   let h = '<p>Subtotal: ' + fmt(subtotal()) + '</p>';
   if (retirada) h += '<p>Retirada no local: sem frete</p>';
-  else if (!bai) h += '<p>Frete: informe cidade e bairro para calcular</p>';
+  else if (!bai && !textoEnd) h += '<p>Frete: informe cidade e bairro para calcular</p>';
   else if (f === null) h += '<p class="text-amber-300">Frete: a combinar. Avisaremos o valor pelo WhatsApp.</p>';
-  else h += '<p>Frete: ' + fmt(f) + '</p>';
+  else h += '<p>Frete: ' + fmt(f) + (achado ? ' (' + esc(achado.bairro) + ')' : '') + '</p>';
   if (taxa) h += '<p>Taxa da maquininha: ' + fmt(taxa) + '</p>';
   h += '<p class="text-white font-semibold">Total' + (f === null ? ' (sem o frete)' : '') + ': ' + fmt(subtotal() + (f || 0) + taxa) + '</p>';
   box.innerHTML = h;
@@ -919,9 +953,10 @@ async function confirmarPedido() {
 
   const taxa = pag === 'cartao' ? (Number(config.taxaMaquininha) || 0) : 0;
   const cidFrete = $('c-cidade').value, baiFrete = tira($('c-bairro').value);
-  const frete = retirada ? 0 : freteDe(cidFrete, baiFrete);
+  const achado = retirada ? null : acharFrete(end, cidFrete, baiFrete);
+  const frete = retirada ? 0 : (achado ? (Number(achado.valor) || 0) : null);
   const freteCombinar = !retirada && frete === null;
-  const localFrete = [baiFrete, cidFrete].filter(Boolean).join(', ');
+  const localFrete = achado ? [achado.bairro, achado.cidade].join(', ') : [baiFrete, cidFrete].filter(Boolean).join(', ');
   const total = subtotal() + (frete || 0) + taxa;
   const t = Number(trocoTxt.replace(',', '.'));
   const troco = pag === 'dinheiro' && t > 0 ? t : null;
