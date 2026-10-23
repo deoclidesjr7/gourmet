@@ -71,6 +71,7 @@ sb.auth.onAuthStateChange((evento, sess) => {
 });
 const isSafari = /iP(hone|ad|od)/.test(navigator.userAgent) || /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
 
+const NOME_LOJA = 'Ateliê Gourmet & Fit';
 const CONFIG_PADRAO = {
   titulo: 'Gourmet',
   logo: 'logo-animada.webp',
@@ -203,16 +204,19 @@ async function atualizarVivo() {
   try {
     const { data, error } = await sb.from('gourmet_data').select('key,value');
     if (error || !data) return;
-    let novaConfig = config, novosProdutos = produtos;
+    let novaConfig = config, novosProdutos = produtos, novosFretes = fretes;
     data.forEach(r => {
       if (r.key === 'config') novaConfig = { ...CONFIG_PADRAO, ...r.value };
       if (r.key === 'produtos') novosProdutos = Array.isArray(r.value) ? r.value : [];
-      if (r.key === 'fretes' && Array.isArray(r.value)) fretes = r.value;
+      if (r.key === 'fretes') novosFretes = Array.isArray(r.value) ? r.value : [];
     });
     const configMudou = JSON.stringify(novaConfig) !== JSON.stringify(config);
     const produtosMudou = JSON.stringify(novosProdutos) !== JSON.stringify(produtos);
+    const fretesMudou = JSON.stringify(novosFretes) !== JSON.stringify(fretes);
+    if (!configMudou && !produtosMudou && !fretesMudou) return;
+    config = novaConfig; produtos = novosProdutos; fretes = novosFretes;
+    if ($('c-resumo')) atualizarResumo();                 // checkout aberto: recalcula o frete
     if (!configMudou && !produtosMudou) return;
-    config = novaConfig; produtos = novosProdutos;
     if (modalTipo === 'catalogo') {                       // catálogo aberto: atualiza no lugar, mantendo a rolagem
       const antes = $('modal').firstElementChild;
       const y = antes ? antes.scrollTop : 0;
@@ -225,10 +229,31 @@ async function atualizarVivo() {
   } catch (e) { console.warn(e); } finally { atualizando = false; }
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) atualizarVivo(); });
-setInterval(atualizarVivo, 60000);
+setInterval(atualizarVivo, 20000);   // garantia: confere a cada 20 s caso o ao vivo falhe
+
+// ao vivo: assim que o admin salva algo, o site de quem está olhando atualiza na hora
+let canalDados = null, timerDados = null, tentativasDados = 0;
+function ligarDadosAoVivo() {
+  if (canalDados) return;
+  canalDados = sb.channel('dados-site')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'gourmet_data' }, () => {
+      clearTimeout(timerDados);
+      timerDados = setTimeout(atualizarVivo, 300);
+    })
+    .subscribe(st => {
+      if (st === 'SUBSCRIBED') tentativasDados = 0;
+      if ((st === 'CHANNEL_ERROR' || st === 'TIMED_OUT') && tentativasDados < 3) {
+        tentativasDados++;
+        try { sb.removeChannel(canalDados); } catch (e) {}
+        canalDados = null;
+        setTimeout(ligarDadosAoVivo, 5000);
+      }
+    });
+}
 
 async function iniciar() {
   await carregarDados();
+  ligarDadosAoVivo();
   const { data } = await sb.auth.getSession();
   sessao = data.session;
   render();
@@ -526,7 +551,7 @@ async function cancelarMeuPedido(id) {
 }
 
 /* ---------- avisos de status para o cliente ---------- */
-let statusConhecido = {}, canalCliente = null;
+let statusConhecido = {}, canalCliente = null, tentativasCliente = 0;
 const ehClienteComum = () => sessao && !isAdminEmail(sessao.user.email);
 
 function mostrarAviso(texto) {
@@ -580,7 +605,15 @@ async function iniciarAvisosCliente() {
   canalCliente = sb.channel('cliente-pedidos-' + sessao.user.id)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'gourmet_pedidos', filter: 'user_id=eq.' + sessao.user.id },
       payload => registrarStatus(payload.new, false))
-    .subscribe();
+    .subscribe(st => {
+      if (st === 'SUBSCRIBED') tentativasCliente = 0;
+      if ((st === 'CHANNEL_ERROR' || st === 'TIMED_OUT') && tentativasCliente < 3) {
+        tentativasCliente++;
+        try { sb.removeChannel(canalCliente); } catch (e) {}
+        canalCliente = null;
+        setTimeout(iniciarAvisosCliente, 5000);
+      }
+    });
 }
 
 function pararAvisosCliente() {
@@ -589,11 +622,11 @@ function pararAvisosCliente() {
 }
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden) carregarStatusCliente(false); });
-setInterval(() => { if (!document.hidden) carregarStatusCliente(false); }, 45000);
+setInterval(() => { if (!document.hidden) carregarStatusCliente(false); }, 15000);
 
 function abrirSuporte() {
   const nome = sessao && sessao.user && sessao.user.user_metadata && sessao.user.user_metadata.nome;
-  const txt = 'Olá! ' + (nome ? 'Sou ' + nome + ' e ' : '') + 'preciso de ajuda.';
+  const txt = '*' + NOME_LOJA + '*\nOlá! ' + (nome ? 'Sou ' + nome + ' e ' : '') + 'preciso de ajuda.';
   modal(`
     <h2 class="serif text-3xl mb-3">Suporte</h2>
     <p class="text-white/70">Ficou com alguma dúvida? Fale com a loja pelo WhatsApp:</p>
@@ -1335,6 +1368,7 @@ async function mudarStatus(id, status) {
   renderPedidos();
 }
 
+let timerPedidosAdmin = null;
 function ligarTempoReal() {
   if (canal) return;
   canal = sb.channel('gourmet-pedidos')
@@ -1344,6 +1378,16 @@ function ligarTempoReal() {
         new Notification(ehFreteCombinar(payload.new) ? '⚠ Novo pedido: FRETE A COMBINAR' : 'Novo pedido', { body: payload.new.cliente_nome + ' · ' + fmt(payload.new.total) });
       }
       if (adminTab === 'pedidos' && sessao) renderPedidos();
+    })
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'gourmet_pedidos' }, () => {
+      // um pedido mudou de status (ex.: o cliente cancelou): atualiza a lista mantendo a rolagem
+      clearTimeout(timerPedidosAdmin);
+      timerPedidosAdmin = setTimeout(async () => {
+        if (adminTab !== 'pedidos' || !sessao || location.hash !== '#admin') return;
+        const y = window.scrollY;
+        await renderPedidos();
+        window.scrollTo(0, y);
+      }, 400);
     })
     .subscribe();
 }
