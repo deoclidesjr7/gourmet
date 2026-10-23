@@ -45,6 +45,7 @@
   .rolagem-fina::-webkit-scrollbar-thumb { background: rgba(255,255,255,.4); border-radius: 4px; }
   .rolagem-fina::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
   label { display: block; font-size: 12px; color: rgba(255,255,255,.7); margin: 10px 0 4px; }
+  input.chk { width: 22px; height: 22px; padding: 0 !important; accent-color: #fff; flex: none; }
   .btn { background: #fff; color: #000; border-radius: 999px; padding: 10px 18px; font-weight: 600; cursor: pointer; border: none; white-space: nowrap; }
   .btn2 { background: rgba(255,255,255,.1); color: #fff; border-radius: 999px; padding: 8px 14px; cursor: pointer; border: 1px solid rgba(255,255,255,.2); white-space: nowrap; text-decoration: none; display: inline-block; }
 </style>
@@ -79,15 +80,20 @@ const CONFIG_PADRAO = {
   abas: ['Bolos', 'Tortas', 'Sem açúcar', 'Sob encomenda'],
   whatsapp: '5547999999999',
   taxaMaquininha: 3,
+  retiradaAtiva: false,
+  retiradaEndereco: 'Penha - SC',
   pix: ''
 };
 
 let config = { ...CONFIG_PADRAO };
 let produtos = [];
+let fretes = [];
+let freteEditId = null;
 let carrinho = [];
 let sessao = null;
 let adminTab = 'pedidos';
 let relPeriodo = '30';
+let relComFrete = true;
 let relDados = null;
 let prodEditando = null;
 let canal = null;
@@ -116,8 +122,34 @@ async function carregarDados() {
   (data || []).forEach(r => {
     if (r.key === 'config') config = { ...CONFIG_PADRAO, ...r.value };
     if (r.key === 'produtos') produtos = Array.isArray(r.value) ? r.value : [];
+    if (r.key === 'fretes') fretes = Array.isArray(r.value) ? r.value : [];
   });
 }
+
+const normTxt = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+// devolve o valor do frete (número, pode ser 0) ou null se cidade/bairro não estiverem na lista
+function freteDe(cidade, bairro) {
+  const c = normTxt(cidade), b = normTxt(bairro);
+  if (!c || !b) return null;
+  const f = fretes.find(x => normTxt(x.cidade) === c && normTxt(x.bairro) === b);
+  return f ? (Number(f.valor) || 0) : null;
+}
+const ehRetirada = p => (p.itens || []).some(l => /^retirada no local/i.test(String(l)));
+const freteDoPedido = p => {
+  for (const l of (p.itens || [])) {
+    const m = String(l).match(/^Frete: R\$ ([\d.,]+)/);
+    if (m) return Number(m[1].replace(/\./g, '').replace(',', '.')) || 0;
+  }
+  return 0;
+};
+function fmtZap(w) {
+  let d = String(w || '').replace(/\D/g, '');
+  if (d.startsWith('55') && d.length >= 12) d = d.slice(2);
+  if (d.length === 11) return '(' + d.slice(0, 2) + ') ' + d.slice(2, 7) + '-' + d.slice(7);
+  if (d.length === 10) return '(' + d.slice(0, 2) + ') ' + d.slice(2, 6) + '-' + d.slice(6);
+  return d;
+}
+const ehFreteCombinar = p => (p.itens || []).some(l => /^frete a combinar/i.test(String(l)));
 
 const numPedido = n => n ? '#' + String(n).padStart(2, '0') : '';
 const linkZap = w => {
@@ -175,6 +207,7 @@ async function atualizarVivo() {
     data.forEach(r => {
       if (r.key === 'config') novaConfig = { ...CONFIG_PADRAO, ...r.value };
       if (r.key === 'produtos') novosProdutos = Array.isArray(r.value) ? r.value : [];
+      if (r.key === 'fretes' && Array.isArray(r.value)) fretes = r.value;
     });
     const configMudou = JSON.stringify(novaConfig) !== JSON.stringify(config);
     const produtosMudou = JSON.stringify(novosProdutos) !== JSON.stringify(produtos);
@@ -443,6 +476,7 @@ async function renderConta() {
     <div class="flex justify-between items-center mb-6 flex-wrap gap-3">
       <h1 class="serif text-4xl">Olá, ${esc(nomeCliente())}</h1>
       <div class="flex gap-2 flex-wrap">
+        <button class="btn2" data-act="suporte">Suporte</button>
         <button class="btn2" data-act="push-ativar">Ativar avisos de pedido</button>
         <button class="btn2" data-act="catalogo">Ver catálogo</button>
         <a class="btn2" href="#">Voltar ao site</a>
@@ -556,6 +590,19 @@ function pararAvisosCliente() {
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden) carregarStatusCliente(false); });
 setInterval(() => { if (!document.hidden) carregarStatusCliente(false); }, 45000);
+
+function abrirSuporte() {
+  const nome = sessao && sessao.user && sessao.user.user_metadata && sessao.user.user_metadata.nome;
+  const txt = 'Olá! ' + (nome ? 'Sou ' + nome + ' e ' : '') + 'preciso de ajuda.';
+  modal(`
+    <h2 class="serif text-3xl mb-3">Suporte</h2>
+    <p class="text-white/70">Ficou com alguma dúvida? Fale com a loja pelo WhatsApp:</p>
+    <p class="text-2xl font-semibold mt-3">${esc(fmtZap(config.whatsapp))}</p>
+    <div class="flex gap-3 mt-5 flex-wrap">
+      <a class="btn" style="text-decoration:none;display:inline-block" href="https://wa.me/${esc(String(config.whatsapp).replace(/\D/g, ''))}?text=${encodeURIComponent(txt)}" target="_blank" rel="noopener">Chamar no WhatsApp</a>
+      <button class="btn2" data-act="fechar">Fechar</button>
+    </div>`);
+}
 
 function reorderPedido(id) {
   const p = meusPedidos.find(x => x.id === id);
@@ -681,6 +728,7 @@ let sugestoesRua = [], ruaTimer = null, ruaReq = 0;
 const semAcento = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 
 function comporEndereco() {
+  atualizarResumo();
   const rua = tira($('c-rua').value), num = tira($('c-num').value), bairro = tira($('c-bairro').value);
   const compl = tira($('c-compl').value), cid = $('c-cidade').value;
   if (!rua) return;
@@ -730,9 +778,16 @@ document.addEventListener('input', (e) => {
   const id = e.target.id;
   if (id === 'c-rua') { clearTimeout(ruaTimer); ruaTimer = setTimeout(buscarRua, 450); comporEndereco(); }
   else if (id === 'c-num' || id === 'c-bairro' || id === 'c-compl') comporEndereco();
+  else if (id === 't-cidade') {
+    const cid = CIDADES_ENTREGA.find(c => normTxt(c) === normTxt(e.target.value));
+    const dl = $('t-bairros');
+    if (dl) dl.innerHTML = bairrosDaCidade(cid || '').map(b => `<option value="${esc(b)}"></option>`).join('');
+  }
 });
 document.addEventListener('change', (e) => {
   if (e.target.id === 'c-cidade') { buscarRua(); comporEndereco(); }
+  else if (e.target.id === 'c-pag') atualizarResumo();
+  else if (e.target.id === 'c-modo') alternarModo();
 });
 
 function abrirCheckout() {
@@ -743,6 +798,17 @@ function abrirCheckout() {
     <input id="c-nome" value="${esc(m.nome || '')}">
     <label>WhatsApp (com DDD)</label>
     <input id="c-whats" inputmode="tel" value="${esc(m.whatsapp || '')}">
+    ${config.retiradaAtiva ? `
+    <label>Como você quer receber?</label>
+    <select id="c-modo">
+      <option value="entrega">Entrega no meu endereço</option>
+      <option value="retirada">Retirar no local</option>
+    </select>
+    <div id="c-retirada" style="display:none" class="mt-3 text-sm text-white/80 border border-white/15 rounded-xl p-3">
+      🏪 Retire seu pedido em:<br><b>${esc(config.retiradaEndereco)}</b><br>
+      <a class="underline" href="${linkMapa(config.retiradaEndereco)}" target="_blank" rel="noopener">Ver no mapa</a>
+    </div>` : ''}
+    <div id="c-bloco-end">
     <label>Cidade da entrega</label>
     <select id="c-cidade">
       <option value="">Selecione a cidade</option>
@@ -759,6 +825,7 @@ function abrirCheckout() {
     <input id="c-compl" autocomplete="off" placeholder="Ex: apto 12, casa azul">
     <label>Endereço que será enviado (confira)</label>
     <textarea id="c-end" rows="3">${esc(m.endereco || '')}</textarea>
+    </div>
     <label>Forma de pagamento (pago na entrega)</label>
     <select id="c-pag" onchange="$('c-troco-wrap').style.display = this.value === 'dinheiro' ? 'block' : 'none'">
       <option value="pix">PIX</option>
@@ -770,11 +837,38 @@ function abrirCheckout() {
       <input id="c-troco" inputmode="decimal" placeholder="Ex: 50,00">
     </div>
     ${config.pix ? `<p class="text-sm text-white/70 mt-3">Chave PIX: ${esc(config.pix)}</p>` : ''}
-    <p class="text-white/70 mt-4">Subtotal: ${fmt(subtotal())}</p>
+    <div id="c-resumo" class="mt-4 text-white/70"></div>
     <div class="flex gap-3 mt-4 flex-wrap">
       <button class="btn" data-act="confirmar">Confirmar pedido</button>
       <button class="btn2" data-act="carrinho">Voltar</button>
     </div>`);
+  atualizarResumo();
+}
+
+const modoRetirada = () => !!($('c-modo') && $('c-modo').value === 'retirada');
+function alternarModo() {
+  const r = modoRetirada();
+  $('c-bloco-end').style.display = r ? 'none' : 'block';
+  $('c-retirada').style.display = r ? 'block' : 'none';
+  atualizarResumo();
+}
+
+function atualizarResumo() {
+  const box = $('c-resumo'); if (!box) return;
+  const cid = $('c-cidade') ? $('c-cidade').value : '';
+  const bai = $('c-bairro') ? tira($('c-bairro').value) : '';
+  const pag = $('c-pag') ? $('c-pag').value : 'pix';
+  const retirada = modoRetirada();
+  const f = retirada ? 0 : freteDe(cid, bai);
+  const taxa = pag === 'cartao' ? (Number(config.taxaMaquininha) || 0) : 0;
+  let h = '<p>Subtotal: ' + fmt(subtotal()) + '</p>';
+  if (retirada) h += '<p>Retirada no local: sem frete</p>';
+  else if (!bai) h += '<p>Frete: informe cidade e bairro para calcular</p>';
+  else if (f === null) h += '<p class="text-amber-300">Frete: a combinar. Avisaremos o valor pelo WhatsApp.</p>';
+  else h += '<p>Frete: ' + fmt(f) + '</p>';
+  if (taxa) h += '<p>Taxa da maquininha: ' + fmt(taxa) + '</p>';
+  h += '<p class="text-white font-semibold">Total' + (f === null ? ' (sem o frete)' : '') + ': ' + fmt(subtotal() + (f || 0) + taxa) + '</p>';
+  box.innerHTML = h;
 }
 
 async function confirmarPedido() {
@@ -782,7 +876,8 @@ async function confirmarPedido() {
 
   const nome = tira($('c-nome').value);
   const whats = tira($('c-whats').value).replace(/\D/g, '');
-  const end = tira($('c-end').value);
+  const retirada = !!config.retiradaAtiva && modoRetirada();
+  const end = retirada ? 'RETIRADA NO LOCAL: ' + config.retiradaEndereco : tira($('c-end').value);
   const pag = $('c-pag').value;
   const trocoTxt = tira($('c-troco')?.value);
 
@@ -790,12 +885,21 @@ async function confirmarPedido() {
   if (!carrinho.length) { alert('Seu carrinho está vazio.'); return; }
 
   const taxa = pag === 'cartao' ? (Number(config.taxaMaquininha) || 0) : 0;
-  const total = subtotal() + taxa;
+  const cidFrete = $('c-cidade').value, baiFrete = tira($('c-bairro').value);
+  const frete = retirada ? 0 : freteDe(cidFrete, baiFrete);
+  const freteCombinar = !retirada && frete === null;
+  const localFrete = [baiFrete, cidFrete].filter(Boolean).join(', ');
+  const total = subtotal() + (frete || 0) + taxa;
   const t = Number(trocoTxt.replace(',', '.'));
   const troco = pag === 'dinheiro' && t > 0 ? t : null;
   const rotulo = { pix: 'PIX na entrega', cartao: 'Cartão na entrega', dinheiro: 'Dinheiro na entrega' }[pag];
   const itens = carrinho.map(i => `${i.qtd}x ${i.nome} (${fmt(i.preco * i.qtd)})`);
   const itensGuardados = carrinho.map(i => ({ id: i.id, qtd: i.qtd }));
+  const linhaFrete = retirada
+    ? 'Retirada no local (' + config.retiradaEndereco + ')'
+    : freteCombinar
+    ? 'Frete a combinar' + (localFrete ? ' (' + localFrete + ')' : '')
+    : 'Frete: ' + fmt(frete) + ' (' + localFrete + ')';
 
   const win = window.open('', '_blank');
   const { data: ped, error } = await sb.from('gourmet_pedidos').insert({
@@ -803,7 +907,7 @@ async function confirmarPedido() {
     cliente_nome: nome,
     whatsapp: whats,
     endereco: end,
-    itens,
+    itens: [...itens, linhaFrete],
     carrinho: itensGuardados,
     total,
     forma_pagamento: rotulo,
@@ -817,11 +921,12 @@ async function confirmarPedido() {
     return;
   }
 
-  sb.auth.updateUser({ data: { nome, whatsapp: whats, endereco: end } }).catch(() => {});
+  sb.auth.updateUser({ data: retirada ? { nome, whatsapp: whats } : { nome, whatsapp: whats, endereco: end } }).catch(() => {});
 
   let msg = '*Novo pedido*\n' + (ped && ped.numero ? '*' + numPedido(ped.numero) + '*\n' : '') + '\n' + itens.join('\n') + '\n\nSubtotal: ' + fmt(subtotal());
+  msg += retirada ? '\nRetirada no local (sem frete)' : freteCombinar ? '\n*⚠ FRETE A COMBINAR*' + (localFrete ? ' (' + localFrete + ')' : '') : '\nFrete: ' + fmt(frete);
   if (taxa) msg += '\nTaxa da maquininha: ' + fmt(taxa);
-  msg += '\n*Total: ' + fmt(total) + '*\n\nCliente: ' + nome + '\nWhatsApp: ' + whats + '\nConversar: ' + linkZap(whats) + '\nEndereço: ' + end + '\nMapa: ' + linkMapa(end) + '\nPagamento: ' + rotulo;
+  msg += '\n*Total' + (freteCombinar ? ' (sem o frete)' : '') + ': ' + fmt(total) + '*\n\nCliente: ' + nome + '\nWhatsApp: ' + whats + '\nConversar: ' + linkZap(whats) + (retirada ? '\n🏪 *RETIRADA NO LOCAL*: ' + config.retiradaEndereco : '\nEndereço: ' + end + '\nMapa: ' + linkMapa(end)) + '\nPagamento: ' + rotulo;
   if (troco) msg += '\nTroco para: ' + fmt(troco);
 
   const url = 'https://wa.me/' + config.whatsapp + '?text=' + encodeURIComponent(msg);
@@ -871,7 +976,7 @@ async function renderAdmin() {
     return;
   }
 
-  const abas = [['pedidos', 'Pedidos'], ['aparencia', 'Aparência'], ['produtos', 'Produtos'], ['relatorios', 'Relatórios']];
+  const abas = [['pedidos', 'Pedidos'], ['aparencia', 'Aparência'], ['produtos', 'Produtos'], ['relatorios', 'Relatórios'], ['taxas', 'Taxas']];
   $('app').innerHTML = `
   <div class="min-h-screen p-5 max-w-3xl mx-auto">
     <div class="flex justify-between items-center mb-5 flex-wrap gap-3">
@@ -889,6 +994,167 @@ async function renderAdmin() {
   if (adminTab === 'aparencia') renderAparencia();
   if (adminTab === 'produtos') renderProdutos();
   if (adminTab === 'relatorios') await renderRelatorios();
+  if (adminTab === 'taxas') await renderTaxas();
+}
+
+/* ---------- admin: taxas (frete e maquininha) ---------- */
+async function renderTaxas() {
+  $('admin-conteudo').innerHTML = '<p class="text-white/60">Carregando...</p>';
+  try {
+    const { data, error } = await sb.from('gourmet_data').select('key,value').in('key', ['config', 'fretes']);
+    if (error) throw error;
+    (data || []).forEach(r => {
+      if (r.key === 'config') config = { ...CONFIG_PADRAO, ...r.value };
+      if (r.key === 'fretes') fretes = Array.isArray(r.value) ? r.value : [];
+    });
+  } catch (e) {
+    $('admin-conteudo').innerHTML = '<p class="text-red-400">Erro ao carregar: ' + esc(e.message) + '</p>';
+    return;
+  }
+  desenharTaxas();
+}
+
+function bairrosDaCidade(cidade) {
+  const c = normTxt(cidade);
+  const lista = fretes.filter(f => !c || normTxt(f.cidade) === c).map(f => f.bairro);
+  return [...new Set(lista)].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+function desenharTaxas() {
+  const ed = freteEditId ? fretes.find(f => f.id === freteEditId) : null;
+  const ordenado = [...fretes].sort((a, b) => a.cidade.localeCompare(b.cidade, 'pt-BR') || a.bairro.localeCompare(b.bairro, 'pt-BR'));
+  $('admin-conteudo').innerHTML = `
+  <div class="glass rounded-2xl p-5">
+    <h2 class="text-xl font-semibold mb-1">Taxa da maquininha</h2>
+    <p class="text-sm text-white/60">Valor somado ao pedido quando o cliente paga no cartão.</p>
+    <label>Taxa da maquininha (R$)</label>
+    <input id="t-maq" type="number" step="0.01" min="0" inputmode="decimal" value="${esc(config.taxaMaquininha)}">
+    <button class="btn mt-4" data-act="taxa-maq-salvar">Salvar taxa da maquininha</button>
+  </div>
+
+  <div class="glass rounded-2xl p-5 mt-4">
+    <h2 class="text-xl font-semibold mb-1">Retirar no local</h2>
+    <p class="text-sm text-white/60">Marcado: o cliente vê a opção "Retirar no local" ao finalizar o pedido (sem frete). Desmarcado: a opção não aparece.</p>
+    <div class="flex items-center gap-3 mt-4">
+      <input type="checkbox" id="t-ret-ativa" class="chk" ${config.retiradaAtiva ? 'checked' : ''}>
+      <label for="t-ret-ativa" style="display:inline;margin:0;font-size:15px;color:#fff;cursor:pointer">Oferecer "Retirar no local" ao cliente</label>
+    </div>
+    <label>Endereço para retirada (você pode editar quando quiser)</label>
+    <textarea id="t-ret-end" rows="2">${esc(config.retiradaEndereco)}</textarea>
+    <button class="btn mt-4" data-act="retirada-salvar">Salvar retirada</button>
+  </div>
+
+  <div class="glass rounded-2xl p-5 mt-4">
+    <h2 class="text-xl font-semibold mb-1">Frete por bairro</h2>
+    <p class="text-sm text-white/60">Se o bairro do cliente não estiver na lista, o pedido sai com "frete a combinar" e aparece em destaque em Pedidos.</p>
+    <label>Cidade</label>
+    <input id="t-cidade" list="t-cidades" autocomplete="off" placeholder="Digite a primeira letra" value="${esc(ed ? ed.cidade : '')}">
+    <datalist id="t-cidades">${CIDADES_ENTREGA.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist>
+    <label>Bairro</label>
+    <input id="t-bairro" list="t-bairros" autocomplete="off" placeholder="Digite a primeira letra" value="${esc(ed ? ed.bairro : '')}">
+    <datalist id="t-bairros">${bairrosDaCidade(ed ? ed.cidade : '').map(b => `<option value="${esc(b)}"></option>`).join('')}</datalist>
+    <label>Valor do frete (R$)</label>
+    <input id="t-valor" type="number" step="0.01" min="0" inputmode="decimal" value="${ed ? esc(ed.valor) : ''}">
+    <div class="flex gap-2 mt-4 flex-wrap">
+      <button class="btn" data-act="frete-salvar">${ed ? 'Salvar alteração' : 'Adicionar frete'}</button>
+      ${ed ? '<button class="btn2" data-act="frete-cancelar">Cancelar edição</button>' : ''}
+    </div>
+
+    <h3 class="font-semibold mt-6 mb-2">Fretes cadastrados (${fretes.length})</h3>
+    ${ordenado.length ? ordenado.map(f => `
+      <div class="flex justify-between items-center gap-2 py-2 border-b border-white/10 text-sm flex-wrap">
+        <span>${esc(f.cidade)} · ${esc(f.bairro)}</span>
+        <span class="flex items-center gap-2 flex-wrap"><b>${fmt(f.valor)}</b>
+          <button class="btn2" data-act="frete-editar" data-id="${esc(f.id)}">Editar</button>
+          <button class="btn2" data-act="frete-excluir" data-id="${esc(f.id)}">Excluir</button>
+        </span>
+      </div>`).join('') : '<p class="text-white/60 text-sm">Nenhum frete cadastrado ainda. Enquanto a lista estiver vazia, todos os pedidos saem com "frete a combinar".</p>'}
+  </div>`;
+}
+
+async function mesclarConfig(parte) {
+  const { data, error } = await sb.from('gourmet_data').select('value').eq('key', 'config').maybeSingle();
+  if (error) throw error;
+  const nova = { ...CONFIG_PADRAO, ...((data && data.value) || {}), ...parte };
+  await gravar('config', nova);
+  config = nova;
+}
+
+async function salvarTaxaMaq() {
+  const bruto = String($('t-maq').value).replace(',', '.');
+  const v = Number(bruto);
+  if (bruto === '' || !(v >= 0)) { alert('Digite o valor da taxa da maquininha.'); return; }
+  try {
+    await mesclarConfig({ taxaMaquininha: v });
+    alert('Taxa da maquininha salva.');
+  } catch (e) {
+    alert('Erro ao salvar: ' + e.message);
+  }
+}
+
+async function salvarRetirada() {
+  const ativa = $('t-ret-ativa').checked;
+  const end = tira($('t-ret-end').value);
+  if (ativa && !end) { alert('Digite o endereço de retirada antes de ativar a opção.'); return; }
+  try {
+    await mesclarConfig({ retiradaAtiva: ativa, retiradaEndereco: end });
+    alert(ativa ? 'Retirada no local salva e visível para o cliente.' : 'Retirada no local salva e escondida do cliente.');
+  } catch (e) {
+    alert('Erro ao salvar: ' + e.message);
+  }
+}
+
+async function atualizarFretes(fn) {
+  const { data, error } = await sb.from('gourmet_data').select('value').eq('key', 'fretes').maybeSingle();
+  if (error) throw error;
+  let lista = Array.isArray(data && data.value) ? data.value : [];
+  lista = fn(lista) || lista;
+  await gravar('fretes', lista);
+  fretes = lista;
+}
+
+async function salvarFrete() {
+  const cid = CIDADES_ENTREGA.find(c => normTxt(c) === normTxt($('t-cidade').value));
+  const bai = tira($('t-bairro').value);
+  const bruto = String($('t-valor').value).replace(',', '.');
+  const v = Number(bruto);
+  if (!cid) { alert('Escolha uma das cidades da lista: ' + CIDADES_ENTREGA.join(', ') + '.'); return; }
+  if (!bai) { alert('Digite o bairro.'); return; }
+  if (bruto === '' || !(v >= 0)) { alert('Digite o valor do frete.'); return; }
+  const chave = x => normTxt(x.cidade) + '|' + normTxt(x.bairro);
+  try {
+    let atualizou = false;
+    await atualizarFretes(lista => {
+      const item = freteEditId ? lista.find(x => x.id === freteEditId) : null;
+      const novo = { cidade: cid, bairro: bai };
+      const dup = lista.find(x => chave(x) === chave(novo) && x !== item);
+      if (item) {
+        item.cidade = cid; item.bairro = bai; item.valor = v;
+        if (dup) lista.splice(lista.indexOf(dup), 1);
+      } else if (dup) {
+        dup.valor = v; atualizou = true;
+      } else {
+        lista.push({ id: novoId(), cidade: cid, bairro: bai, valor: v });
+      }
+      return lista;
+    });
+    freteEditId = null;
+    desenharTaxas();
+    if (atualizou) alert('Esse bairro já existia. O valor foi atualizado.');
+  } catch (e) {
+    alert('Erro ao salvar: ' + e.message);
+  }
+}
+
+async function excluirFrete(id) {
+  if (!confirm('Excluir este frete?')) return;
+  try {
+    await atualizarFretes(lista => lista.filter(x => x.id !== id));
+    if (freteEditId === id) freteEditId = null;
+    desenharTaxas();
+  } catch (e) {
+    alert('Erro ao excluir: ' + e.message);
+  }
 }
 
 /* ---------- admin: relatórios ---------- */
@@ -902,6 +1168,10 @@ async function renderRelatorios() {
           ${periodos.map(([k, n]) => `<button class="${relPeriodo === k ? 'btn' : 'btn2'}" data-act="rel-periodo" data-val="${k}">${n}</button>`).join('')}
           <button class="btn2" data-act="rel-baixar">Baixar planilha</button>
         </div>
+      </div>
+      <div class="flex items-center gap-3 mb-4">
+        <input type="checkbox" id="rel-frete" class="chk" data-act="rel-frete" ${relComFrete ? 'checked' : ''}>
+        <label for="rel-frete" style="display:inline;margin:0;font-size:14px;color:#fff;cursor:pointer">Incluir o frete nos valores</label>
       </div>
       <div id="rel-corpo"><p class="text-white/60">Carregando...</p></div>
     </div>`;
@@ -922,7 +1192,8 @@ async function renderRelatorios() {
   const todos = data || [];
   const validos = todos.filter(p => p.status !== 'cancelado');
   const cancelados = todos.length - validos.length;
-  const faturamento = validos.reduce((t, p) => t + (Number(p.total) || 0), 0);
+  const valorPed = p => (Number(p.total) || 0) - (relComFrete ? 0 : freteDoPedido(p));
+  const faturamento = validos.reduce((t, p) => t + valorPed(p), 0);
   const ticket = validos.length ? faturamento / validos.length : 0;
 
   const prods = {};
@@ -942,7 +1213,7 @@ async function renderRelatorios() {
     const k = p.forma_pagamento || 'Não informado';
     if (!pags[k]) pags[k] = { qtd: 0, valor: 0 };
     pags[k].qtd += 1;
-    pags[k].valor += Number(p.total) || 0;
+    pags[k].valor += valorPed(p);
   });
   const listaPags = Object.entries(pags).sort((a, b) => b[1].qtd - a[1].qtd);
 
@@ -951,11 +1222,12 @@ async function renderRelatorios() {
     const k = p.user_id || p.whatsapp;
     if (!clientes[k]) clientes[k] = { nome: p.cliente_nome, whatsapp: p.whatsapp, qtd: 0, valor: 0 };
     clientes[k].qtd += 1;
-    clientes[k].valor += Number(p.total) || 0;
+    clientes[k].valor += valorPed(p);
   });
   const topClientes = Object.values(clientes).sort((a, b) => b.valor - a.valor).slice(0, 10);
 
   relDados = {
+    comFrete: relComFrete,
     periodo: (periodos.find(x => x[0] === relPeriodo) || [0, ''])[1],
     faturamento, pedidos: validos.length, cancelados, ticket, topProds, listaPags, topClientes
   };
@@ -987,6 +1259,7 @@ function baixarRelatorio() {
   const c = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
   const L = [];
   L.push([c('Relatório - ' + d.periodo)].join(';'));
+  L.push([c('Frete incluído nos valores'), c(d.comFrete ? 'sim' : 'não')].join(';'));
   L.push('');
   L.push([c('Faturamento (R$)'), n(d.faturamento)].join(';'));
   L.push([c('Pedidos'), d.pedidos].join(';'));
@@ -1031,8 +1304,13 @@ async function renderPedidos() {
     return;
   }
 
-  $('lista-pedidos').innerHTML = data.length ? data.map(p => `
-    <div class="border border-white/15 rounded-xl p-4">
+  $('lista-pedidos').innerHTML = data.length ? data.map(p => {
+    const alerta = p.status === 'novo' && ehFreteCombinar(p);
+    return `
+    <div class="${alerta ? 'border-2 border-amber-400 bg-amber-400/10' : 'border border-white/15'} rounded-xl p-4">
+      ${ehRetirada(p) ? '<div class="bg-sky-400 text-black rounded-lg p-3 mb-3 font-semibold">🏪 RETIRADA NO LOCAL: o cliente vem buscar. Sem entrega.</div>' : ''}
+      ${alerta ? `<div class="bg-amber-400 text-black rounded-lg p-3 mb-3 font-semibold">⚠ FRETE A COMBINAR: responda o cliente o mais rápido possível com o valor.
+        <a href="${linkZap(p.whatsapp)}" target="_blank" rel="noopener" class="underline block mt-1">Chamar no WhatsApp: ${esc(p.whatsapp)}</a></div>` : ''}
       <div class="flex justify-between flex-wrap gap-2">
         <p class="font-semibold">${p.numero ? '<span class="opacity-70">' + numPedido(p.numero) + '</span> · ' : ''}${esc(p.cliente_nome)} · <a href="${linkZap(p.whatsapp)}" target="_blank" rel="noopener" class="underline">${esc(p.whatsapp)}</a></p>
         <p class="text-sm text-white/60">${new Date(p.created_at).toLocaleString('pt-BR')}</p>
@@ -1045,7 +1323,8 @@ async function renderPedidos() {
           `<button class="${p.status === s ? 'btn' : 'btn2'}" data-act="status" data-id="${esc(p.id)}" data-val="${s}">${s}</button>`
         ).join('')}
       </div>
-    </div>`).join('') : '<p class="text-white/60">Nenhum pedido ainda.</p>';
+    </div>`;
+  }).join('') : '<p class="text-white/60">Nenhum pedido ainda.</p>';
 
   ligarTempoReal();
 }
@@ -1062,7 +1341,7 @@ function ligarTempoReal() {
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'gourmet_pedidos' }, payload => {
       tocar();
       if (window.Notification && Notification.permission === 'granted') {
-        new Notification('Novo pedido', { body: payload.new.cliente_nome + ' · ' + fmt(payload.new.total) });
+        new Notification(ehFreteCombinar(payload.new) ? '⚠ Novo pedido: FRETE A COMBINAR' : 'Novo pedido', { body: payload.new.cliente_nome + ' · ' + fmt(payload.new.total) });
       }
       if (adminTab === 'pedidos' && sessao) renderPedidos();
     })
@@ -1209,8 +1488,6 @@ function renderAparencia() {
     <input id="a-abas" value="${esc(config.abas.join(', '))}">
     <label>WhatsApp da loja (55 + DDD + número)</label>
     <input id="a-whats" value="${esc(config.whatsapp)}">
-    <label>Taxa da maquininha para cartão (R$)</label>
-    <input id="a-taxa" type="number" step="0.01" value="${esc(config.taxaMaquininha)}">
     <label>Chave PIX (mostrada ao cliente)</label>
     <input id="a-pix" value="${esc(config.pix)}">
     <button class="btn mt-6" data-act="config-salvar">Salvar aparência</button>
@@ -1227,7 +1504,6 @@ async function salvarConfig() {
     fundo: tira($('a-fundo').value),
     abas: $('a-abas').value.split(',').map(s => s.trim()).filter(Boolean),
     whatsapp: tira($('a-whats').value).replace(/\D/g, ''),
-    taxaMaquininha: Number($('a-taxa').value) || 0,
     pix: tira($('a-pix').value)
   };
   try {
@@ -1411,7 +1687,15 @@ document.addEventListener('click', async (e) => {
   else if (a === 'admin-login') entrarAdmin();
   else if (a === 'rel-baixar') baixarRelatorio();
   else if (a === 'rel-periodo') { relPeriodo = v; renderRelatorios(); }
-  else if (a === 'admin-tab') { adminTab = v; prodEditando = null; renderAdmin(); }
+  else if (a === 'admin-tab') { adminTab = v; prodEditando = null; freteEditId = null; renderAdmin(); }
+  else if (a === 'taxa-maq-salvar') salvarTaxaMaq();
+  else if (a === 'retirada-salvar') salvarRetirada();
+  else if (a === 'suporte') abrirSuporte();
+  else if (a === 'rel-frete') { relComFrete = !relComFrete; renderRelatorios(); }
+  else if (a === 'frete-salvar') salvarFrete();
+  else if (a === 'frete-editar') { freteEditId = id; desenharTaxas(); $('t-cidade').scrollIntoView({ block: 'center' }); }
+  else if (a === 'frete-cancelar') { freteEditId = null; desenharTaxas(); }
+  else if (a === 'frete-excluir') excluirFrete(id);
   else if (a === 'status') mudarStatus(id, v);
   else if (a === 'notif') ativarNotificacoes();
   else if (a === 'push-ativar') ativarPush();
