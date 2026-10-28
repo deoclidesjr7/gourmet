@@ -305,6 +305,7 @@ async function iniciar() {
   render();
   iniciarAvisosCliente();
   religarPush();
+  setTimeout(precarregarMP, 1500);
 }
 
 /* ---------- site ---------- */
@@ -942,6 +943,7 @@ document.addEventListener('change', (e) => {
 const ehOnline = v => String(v || '').startsWith('mp_');
 let pagGrupo = '';   // '' (nenhum escolhido), 'online' ou 'entrega'
 let pagTravado = false;   // true depois que o pagamento online foi aberto na própria tela
+let pagPend = null, pixCache = {}, execTok = 0, pollTok = 0, iniciandoPag = false, brickAquecido = false;
 function desenharPagamento() {
   const box = $('c-pag-ui'), campo = $('c-pag');
   if (!box || !campo) return;
@@ -962,25 +964,82 @@ function desenharPagamento() {
   box.innerHTML = h;
   const tw = $('c-troco-wrap'); if (tw) tw.style.display = v === 'dinheiro' ? 'block' : 'none';
   const cf = $('c-confirmar'); if (cf) cf.style.display = ehOnline(v) ? 'none' : '';
-  const pn = $('c-pag-painel');
-  if (pn && !pagTravado) {
-    pn.innerHTML = ehOnline(v)
-      ? `<p class="text-sm text-white/70">🔒 Você paga sem sair do site. A loja só recebe o pedido depois que o pagamento for aprovado.</p>
-         <button type="button" class="btn w-full mt-3" data-act="gerar-pag">${v === 'mp_pix' ? 'Gerar QR Code PIX' : 'Continuar para o pagamento'}</button>`
-      : '';
-  }
+  if (!ehOnline(v)) liberarDados();
 }
 function definirPagamento(v) {
   const campo = $('c-pag'); if (!campo) return;
   campo.value = v;
   desenharPagamento();
   atualizarResumo();
+  if (ehOnline(v)) {   // escolheu uma forma online: o pagamento já abre logo abaixo
+    const pn = $('c-pag-painel');
+    if (pn) pn.innerHTML = '<p class="text-sm text-white/60">Preparando o pagamento...</p>';
+    confirmarPedido(true);
+  }
+}
+
+// destrava os dados do pedido e limpa o painel de pagamento
+function liberarDados() {
+  pagTravado = false; execTok++; pollTok++;
+  try { if (mpBrick) { const u = mpBrick.unmount(); if (u && u.catch) u.catch(() => {}); } } catch (e) {}
+  mpBrick = null;
+  const pn = $('c-pag-painel'); if (pn) pn.innerHTML = '';
+  const f = $('c-form'); if (f) { f.style.pointerEvents = ''; f.style.opacity = ''; }
+  const pu = $('c-pag-ui'); if (pu) { pu.style.pointerEvents = ''; pu.style.opacity = ''; }
+  const vb = $('c-voltar'); if (vb) { vb.textContent = 'Voltar'; vb.dataset.act = 'carrinho'; }
+}
+
+// endereço salvo x novo endereço
+function alternarNovoEndereco() {
+  const campos = $('c-end-campos'), btn = $('c-novo-end'); if (!campos || !btn) return;
+  if (campos.style.display === 'none') {
+    campos.style.display = '';
+    ['c-rua', 'c-num', 'c-bairro', 'c-compl', 'c-end'].forEach(i => { if ($(i)) $(i).value = ''; });
+    if ($('c-cidade')) $('c-cidade').value = '';
+    if ($('c-sug')) $('c-sug').innerHTML = '';
+    btn.textContent = 'Usar endereço salvo';
+  } else {
+    campos.style.display = 'none';
+    $('c-end').value = tira(sessao?.user?.user_metadata?.endereco);
+    btn.textContent = 'Novo endereço';
+  }
+  atualizarResumo();
+}
+
+// baixa o Mercado Pago em segundo plano para o pagamento abrir rápido
+function precarregarMP() {
+  if (!MP_ATIVO || !MP_PUBLIC_KEY) return;
+  carregarMP().then(() => {
+    mpInst = mpInst || new MercadoPago(MP_PUBLIC_KEY, { locale: 'pt-BR' });
+    aquecerBrick();
+  }).catch(() => {});
+}
+// cria um formulário de cartão invisível só para o navegador já baixar tudo (não cobra nada)
+async function aquecerBrick() {
+  if (brickAquecido || !mpInst) return;
+  brickAquecido = true;
+  try {
+    const box = document.createElement('div');
+    box.id = 'mp-aquecer';
+    box.style.cssText = 'position:fixed;left:-9999px;top:0;width:420px;opacity:0;pointer-events:none';
+    document.body.appendChild(box);
+    const b = await mpInst.bricks().create('payment', 'mp-aquecer', {
+      initialization: { amount: 10 },
+      customization: { paymentMethods: { creditCard: 'all', debitCard: 'all' } },
+      callbacks: { onReady: () => {}, onSubmit: () => new Promise(() => {}), onError: () => {} }
+    });
+    setTimeout(() => { try { b.unmount(); } catch (e) {} box.remove(); }, 4000);
+  } catch (e) { const bx = $('mp-aquecer'); if (bx) bx.remove(); }
 }
 
 function abrirCheckout() {
   const m = sessao?.user?.user_metadata || {};
   pagGrupo = MP_ATIVO ? '' : 'entrega';
   pagTravado = false;
+  if (pagPend && !pagPend.pixGerado) sb.from('gourmet_pedidos_pendentes').delete().eq('id', pagPend.id).then(() => {}, () => {});
+  pagPend = null; pixCache = {};
+  const temSalvo = !!tira(m.endereco);
+  precarregarMP();
   modal(`
     <h2 class="serif text-3xl mb-4">Finalizar pedido</h2>
     <div id="c-form">
@@ -999,6 +1058,8 @@ function abrirCheckout() {
       <a class="underline" href="${linkMapa(config.retiradaEndereco)}" target="_blank" rel="noopener">Ver no mapa</a>
     </div>` : ''}
     <div id="c-bloco-end">
+    ${temSalvo ? '<button type="button" id="c-novo-end" class="btn2 mt-3" data-act="novo-end">Novo endereço</button>' : ''}
+    <div id="c-end-campos" style="${temSalvo ? 'display:none' : ''}">
     <label>Cidade da entrega</label>
     <select id="c-cidade">
       <option value="">Selecione a cidade</option>
@@ -1013,8 +1074,9 @@ function abrirCheckout() {
     </div>
     <label>Complemento ou ponto de referência (opcional)</label>
     <input id="c-compl" autocomplete="off" placeholder="Ex: apto 12, casa azul">
+    </div>
     <label>Endereço que será enviado (confira)</label>
-    <textarea id="c-end" rows="3">${esc(m.endereco || '')}</textarea>
+    <input id="c-end" autocomplete="off" placeholder="Rua, número - bairro, cidade - SC" value="${esc(m.endereco || '')}">
     </div>
     </div>
     <label>Forma de pagamento</label>
@@ -1099,28 +1161,33 @@ async function abrirPagamento(pendId, total, msgWhats, modo) {
 function embutirPagamento(pendId, total, msgWhats, modo) {
   const pn = $('c-pag-painel'); if (!pn) { abrirPagamento(pendId, total, msgWhats, modo); return; }
   pagTravado = true;
-  ['c-form', 'c-pag-ui'].forEach(i => { const e = $(i); if (e) { e.style.pointerEvents = 'none'; e.style.opacity = '.55'; } });
+  const f = $('c-form'); if (f) { f.style.pointerEvents = 'none'; f.style.opacity = '.55'; }
+  try { if (mpBrick) { const u = mpBrick.unmount(); if (u && u.catch) u.catch(() => {}); } } catch (e) {}
+  mpBrick = null;
   pn.innerHTML = `
     <p id="mp-nota" class="text-xs text-white/50 mb-3">Seu pedido só é enviado para a loja depois que o pagamento for aprovado.</p>
     <div id="mp-brick"><p class="text-white/60">Carregando...</p></div>
     <div id="mp-pos"></div>
-    <p id="mp-depois" class="text-xs text-white/50 mt-3">Se fechar, você pode pagar depois em <b>Minha conta</b>.</p>`;
+    <p id="mp-depois" class="text-xs text-white/50 mt-3">Se fechar, você pode pagar depois em <b>Minha conta</b>.</p>
+    <button type="button" id="c-alterar" class="text-xs underline text-white/60 mt-2" data-act="alterar-dados">Alterar dados do pedido</button>`;
   const vb = $('c-voltar'); if (vb) { vb.textContent = 'Pagar depois'; vb.dataset.act = 'fechar'; }
-  try { pn.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {}
+  try { pn.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) {}
   executarPagamento(pendId, total, modo, msgWhats);
 }
 
 async function executarPagamento(pendId, total, modo, msgWhats) {
+  const tok = ++execTok;
   mpMsgWhats = msgWhats || '';
-  if (modo === 'pix') { gerarPix(pendId); return; }
+  if (modo === 'pix') { gerarPix(pendId, tok); return; }
 
   try {
     if (!MP_PUBLIC_KEY) throw new Error('Chave pública do Mercado Pago não configurada');
     await carregarMP();
+    if (tok !== execTok) return;
     mpInst = mpInst || new MercadoPago(MP_PUBLIC_KEY, { locale: 'pt-BR' });
     const bricks = mpInst.bricks();
     $('mp-brick').innerHTML = '';
-    mpBrick = await bricks.create('payment', 'mp-brick', {
+    const brick = await bricks.create('payment', 'mp-brick', {
       initialization: { amount: Number(total), payer: { email: sessao?.user?.email || '' } },
       customization: {
         paymentMethods: modo === 'debito' ? { debitCard: 'all' } : { creditCard: 'all' },
@@ -1146,6 +1213,7 @@ async function executarPagamento(pendId, total, modo, msgWhats) {
               reject();
               return;
             }
+            if (pagPend && pagPend.id === pendId) pagPend.pixGerado = true;   // já existe pagamento: não apagar o pedido em espera
             resolve();
             await mostrarStatusPagamento(j.id);
             if (j.status === 'approved' && j.numero) pagamentoConfirmado(j.numero);
@@ -1159,6 +1227,8 @@ async function executarPagamento(pendId, total, modo, msgWhats) {
         onError: err => console.error(err)
       }
     });
+    if (tok !== execTok) { try { brick.unmount(); } catch (e) {} return; }
+    mpBrick = brick;
   } catch (err) {
     console.error(err);
     if ($('mp-brick')) $('mp-brick').innerHTML = '<p class="text-red-300">Não foi possível abrir o pagamento agora. Tente de novo em Minha conta ou fale conosco pelo WhatsApp.</p>';
@@ -1166,42 +1236,49 @@ async function executarPagamento(pendId, total, modo, msgWhats) {
 }
 
 // PIX: tela própria, sem pedir nada ao cliente. Mostra só o QR Code e o código "copia e cola".
-async function gerarPix(pendId) {
+async function gerarPix(pendId, tok) {
   const box = $('mp-brick'); if (!box) return;
-  box.innerHTML = '<p class="text-white/60">Gerando o QR Code...</p>';
-  try {
-    const r = await fetch(MP_FUNCAO_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ' + (sessao?.access_token || SB_KEY),
-        'apikey': SB_KEY
-      },
-      body: JSON.stringify({ pendenteId: pendId, formData: { payment_method_id: 'pix' } })
-    });
-    const j = await r.json();
-    if (!r.ok || !j.id || !j.pix || !j.pix.qr_code) throw new Error(j.erro || 'Não foi possível gerar o PIX');
-    if (!$('mp-brick')) return;   // cliente fechou a tela
-    if (j.status === 'approved' && j.numero) { $('mp-brick').innerHTML = ''; pagamentoConfirmado(j.numero); return; }
-    const img = j.pix.qr_code_base64
-      ? `<img alt="QR Code PIX" src="data:image/png;base64,${j.pix.qr_code_base64}" class="mx-auto rounded-xl bg-white p-2" style="width:240px;height:240px">`
-      : '';
-    box.innerHTML = `
-      <div class="text-center">
-        <p class="text-white/80 mb-3">Abra o app do seu banco e escaneie o QR Code:</p>
-        ${img}
-        <p class="text-sm text-white/70 mt-5 mb-2">Ou, se preferir pagar no app do seu banco, copie o código PIX:</p>
-        <textarea id="pix-codigo" readonly rows="3" style="font-size:13px !important;word-break:break-all">${esc(j.pix.qr_code)}</textarea>
-        <button class="btn mt-3" data-act="pix-copiar">Copiar código PIX</button>
-      </div>`;
-    aguardarConfirmacao(j.id);
-  } catch (err) {
-    console.error(err);
-    if ($('mp-brick')) $('mp-brick').innerHTML = `
-      <p class="text-red-300">Não foi possível gerar o PIX agora.</p>
-      <p class="text-xs text-white/50 mt-1">${esc(err.message || '')}</p>
-      <button class="btn mt-3" data-act="pix-novo" data-id="${esc(pendId)}">Tentar de novo</button>`;
+  let j = pixCache[pendId];
+  if (!j) {
+    box.innerHTML = '<p class="text-white/60">Gerando o QR Code...</p>';
+    try {
+      const r = await fetch(MP_FUNCAO_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + (sessao?.access_token || SB_KEY),
+          'apikey': SB_KEY
+        },
+        body: JSON.stringify({ pendenteId: pendId, formData: { payment_method_id: 'pix' } })
+      });
+      j = await r.json();
+      if (!r.ok || !j.id || !j.pix || !j.pix.qr_code) throw new Error(j.erro || 'Não foi possível gerar o PIX');
+      pixCache[pendId] = j;
+      if (pagPend && pagPend.id === pendId) pagPend.pixGerado = true;   // já existe pagamento: não apagar o pedido em espera
+    } catch (err) {
+      console.error(err);
+      if ($('mp-brick') && (tok === undefined || tok === execTok)) $('mp-brick').innerHTML = `
+        <p class="text-red-300">Não foi possível gerar o PIX agora.</p>
+        <p class="text-xs text-white/50 mt-1">${esc(err.message || '')}</p>
+        <button class="btn mt-3" data-act="pix-novo" data-id="${esc(pendId)}">Tentar de novo</button>`;
+      return;
+    }
   }
+  if (tok !== undefined && tok !== execTok) return;   // o cliente já trocou de forma de pagamento
+  const alvo = $('mp-brick'); if (!alvo) return;
+  if (j.status === 'approved' && j.numero) { alvo.innerHTML = ''; pagamentoConfirmado(j.numero); return; }
+  const img = j.pix.qr_code_base64
+    ? `<img alt="QR Code PIX" src="data:image/png;base64,${j.pix.qr_code_base64}" class="mx-auto rounded-xl bg-white p-2" style="width:240px;height:240px">`
+    : '';
+  alvo.innerHTML = `
+    <div class="text-center">
+      <p class="text-white/80 mb-3">Abra o app do seu banco e escaneie o QR Code:</p>
+      ${img}
+      <p class="text-sm text-white/70 mt-5 mb-2">Ou, se preferir pagar no app do seu banco, copie o código PIX:</p>
+      <textarea id="pix-codigo" readonly rows="3" style="font-size:13px !important;word-break:break-all">${esc(j.pix.qr_code)}</textarea>
+      <button class="btn mt-3" data-act="pix-copiar">Copiar código PIX</button>
+    </div>`;
+  aguardarConfirmacao(j.id);
 }
 
 async function copiarPix() {
@@ -1226,6 +1303,9 @@ async function mostrarStatusPagamento(paymentId) {
 // pagamento aprovado: só agora o pedido existe para a loja (aparece no painel e dispara os avisos)
 function pagamentoConfirmado(numero) {
   if (location.hash === '#conta') atualizarMeusPedidos();
+  if (pagPend) { carrinho = []; atualizarContador(); pagPend = null; }   // pedido enviado: esvazia o carrinho
+  const al = $('c-alterar'); if (al) al.style.display = 'none';
+  const pu = $('c-pag-ui'); if (pu) { pu.style.pointerEvents = 'none'; pu.style.opacity = '.55'; }
   const box = $('mp-pos'); if (!box) return;
   if ($('mp-brick') && $('pix-codigo')) $('mp-brick').innerHTML = '';   // some o QR Code depois de pago
   if ($('mp-nota')) $('mp-nota').style.display = 'none';
@@ -1243,19 +1323,24 @@ function pagamentoConfirmado(numero) {
 
 // PIX (e outros) confirmam depois: espera a loja receber o pedido (o servidor só cria o pedido quando aprovado)
 async function aguardarConfirmacao(paymentId) {
+  const tok = ++pollTok;
   const box = $('mp-pos'); if (!box) return;
   box.innerHTML = '<p class="text-sm text-white/60 mt-3">Aguardando a confirmação do pagamento... Esta tela atualiza sozinha.</p>';
   for (let i = 0; i < 120; i++) {              // até ~10 minutos
     await new Promise(r => setTimeout(r, 5000));
-    if (!$('mp-pos')) return;                   // cliente fechou a tela
+    if (!$('mp-pos') || tok !== pollTok) return;   // cliente fechou a tela ou mudou de forma de pagamento
     const { data } = await sb.from('gourmet_pedidos').select('numero').eq('mp_payment_id', String(paymentId)).maybeSingle();
     if (data && data.numero) { pagamentoConfirmado(data.numero); return; }
   }
   if ($('mp-pos')) $('mp-pos').innerHTML = '<p class="text-sm text-white/60 mt-3">Assim que o pagamento for confirmado, o pedido aparece em <b>Minha conta</b>.</p>';
 }
 
-async function confirmarPedido() {
+async function confirmarPedido(auto) {
   if (!sessao) { iniciarCheckout(); return; }
+  const falha = msg => {
+    if (auto) { const pn = $('c-pag-painel'); if (pn) pn.innerHTML = '<p class="text-sm text-amber-300">' + esc(msg) + '</p>'; }
+    else alert(msg);
+  };
 
   const nome = tira($('c-nome').value);
   const whats = tira($('c-whats').value).replace(/\D/g, '');
@@ -1264,9 +1349,9 @@ async function confirmarPedido() {
   const pag = $('c-pag').value;
   const trocoTxt = tira($('c-troco')?.value);
 
-  if (!nome || !whats || !end) { alert('Preencha nome, WhatsApp e endereço.'); return; }
-  if (!pag) { alert('Escolha a forma de pagamento: Pagar online ou Pagar na entrega.'); return; }
-  if (!carrinho.length) { alert('Seu carrinho está vazio.'); return; }
+  if (!nome || !whats || !end) { falha(auto ? 'Preencha nome, WhatsApp e endereço acima e toque de novo na forma de pagamento.' : 'Preencha nome, WhatsApp e endereço.'); return; }
+  if (!pag) { falha('Escolha a forma de pagamento: Pagar online ou Pagar na entrega.'); return; }
+  if (!carrinho.length) { falha('Seu carrinho está vazio.'); return; }
 
   const taxa = pag === 'cartao' ? (Number(config.taxaMaquininha) || 0) : 0;
   const cidFrete = $('c-cidade').value, baiFrete = tira($('c-bairro').value);
@@ -1313,18 +1398,31 @@ async function confirmarPedido() {
 
   // ---- Pagamento online: o pedido fica RETIDO e só é enviado à loja depois que o pagamento for aprovado ----
   if (online) {
-    const { data: pend, error: errPend } = await sb.from('gourmet_pedidos_pendentes')
-      .insert({ user_id: sessao.user.id, dados: dadosPedido, total, whats_msg: corpoMsg('PAGO ONLINE ✅') })
-      .select('id').single();
-    if (errPend) {
-      console.error(errPend);
-      alert('Não foi possível iniciar o pagamento. Tente novamente.');
-      return;
-    }
-    sb.auth.updateUser({ data: retirada ? { nome, whatsapp: whats } : { nome, whatsapp: whats, endereco: end } }).catch(() => {});
-    carrinho = [];
-    atualizarContador();
-    embutirPagamento(pend.id, total, corpoMsg('PAGO ONLINE ✅'), pag.replace('mp_', ''));
+    if (iniciandoPag) return;
+    iniciandoPag = true;
+    try {
+      const assin = JSON.stringify([total, end, nome, whats, itens, retirada]);
+      let pendId;
+      if (pagPend && pagPend.assin === assin) pendId = pagPend.id;   // mesmos dados: reaproveita o pedido em espera
+      else {
+        if (pagPend && !pagPend.pixGerado) await sb.from('gourmet_pedidos_pendentes').delete().eq('id', pagPend.id);
+        pagPend = null;
+        const { data: pend, error: errPend } = await sb.from('gourmet_pedidos_pendentes')
+          .insert({ user_id: sessao.user.id, dados: dadosPedido, total, whats_msg: corpoMsg('PAGO ONLINE ✅') })
+          .select('id').single();
+        if (errPend) {
+          console.error(errPend);
+          falha('Não foi possível iniciar o pagamento. Tente novamente.');
+          return;
+        }
+        pendId = pend.id;
+        pagPend = { id: pendId, assin, pixGerado: false };
+        sb.auth.updateUser({ data: retirada ? { nome, whatsapp: whats } : { nome, whatsapp: whats, endereco: end } }).catch(() => {});
+      }
+      const agora = $('c-pag') ? $('c-pag').value : '';
+      if (!ehOnline(agora)) return;   // o cliente trocou para pagar na entrega enquanto preparava
+      embutirPagamento(pendId, total, corpoMsg('PAGO ONLINE ✅'), agora.replace('mp_', ''));
+    } finally { iniciandoPag = false; }
     return;
   }
 
@@ -2142,13 +2240,10 @@ document.addEventListener('click', async (e) => {
   else if (a === 'confirmar') confirmarPedido();
   else if (a === 'pag-grupo') { pagGrupo = v; definirPagamento(''); }
   else if (a === 'pag-sel') definirPagamento(v);
-  else if (a === 'gerar-pag') {
-    el.disabled = true; el.textContent = 'Preparando...';
-    await confirmarPedido();
-    if (el.isConnected) desenharPagamento();   // não abriu (faltou algum dado): volta o botão
-  }
+  else if (a === 'alterar-dados') { const c = $('c-pag'); if (c) c.value = ''; liberarDados(); desenharPagamento(); atualizarResumo(); }
+  else if (a === 'novo-end') alternarNovoEndereco();
   else if (a === 'pix-copiar') copiarPix();
-  else if (a === 'pix-novo') gerarPix(id);
+  else if (a === 'pix-novo') gerarPix(id, execTok);
   else if (a === 'sug-rua') escolherRua(Number(el.dataset.i));
   else if (a === 'fechar') fecharModal();
 
