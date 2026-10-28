@@ -93,7 +93,8 @@ let freteEditId = null;
 let carrinho = [];
 let sessao = null;
 let adminTab = 'pedidos';
-let relPeriodo = '30';
+let relPeriodo = '1';      // '1' = hoje, '0' = tudo, 'datas' = período escolhido
+let relIni = '', relFim = '';
 let relComFrete = true;
 let relDados = null;
 let prodEditando = null;
@@ -543,10 +544,30 @@ async function renderConta() {
     <div id="meus"><p class="text-white/60">Carregando...</p></div>
   </div>`;
 
+  await atualizarMeusPedidos();
+}
+
+const fmtHora = d => new Date(d).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+const fmtDataHora = d => new Date(d).toLocaleDateString('pt-BR') + ' às ' + fmtHora(d);
+
+// linha com o horário de cada etapa do pedido (usa status_atualizado_em, preenchido pelo banco)
+function linhaHorario(p) {
+  const quando = p.status_atualizado_em || (p.status === 'novo' ? p.created_at : null);
+  if (!quando) return '';
+  const rotulo = { novo: 'Pedido recebido às', preparando: 'Em preparo desde as', entregando: 'Saiu para entrega às', entregue: 'Entregue em', cancelado: 'Cancelado em' }[p.status];
+  if (!rotulo) return '';
+  const txt = (p.status === 'entregue' || p.status === 'cancelado') ? fmtDataHora(quando) : fmtHora(quando);
+  return `<p class="text-sm mt-1 ${p.status === 'entregue' ? 'text-emerald-300' : 'text-white/70'}">${rotulo} ${txt}</p>`;
+}
+
+// atualiza só a lista de pedidos (sem piscar a tela nem perder a posição da rolagem)
+async function atualizarMeusPedidos() {
+  if (!sessao || !$('meus')) return;
   const { data, error } = await sb.from('gourmet_pedidos')
     .select('*')
     .eq('user_id', sessao.user.id)
     .order('created_at', { ascending: false });
+  if (!$('meus')) return;   // o cliente saiu da tela enquanto carregava
 
   if (error) {
     $('meus').innerHTML = `<p class="text-red-400">Erro ao carregar: ${esc(error.message)}</p>`;
@@ -557,9 +578,10 @@ async function renderConta() {
   $('meus').innerHTML = meusPedidos.length ? meusPedidos.map(p => `
     <div class="glass rounded-xl p-4 mb-3">
       <div class="flex justify-between flex-wrap gap-2">
-        <p class="font-semibold">${new Date(p.created_at).toLocaleDateString('pt-BR')}</p>
+        <p class="font-semibold">${p.numero ? '<span class="text-lg">' + esc(numPedido(p.numero)) + '</span> · ' : ''}${new Date(p.created_at).toLocaleDateString('pt-BR')} às ${fmtHora(p.created_at)}</p>
         <p class="text-sm px-3 py-1 rounded-full bg-white/10">${esc(p.status)}</p>
       </div>
+      ${linhaHorario(p)}
       <ul class="text-sm mt-2 list-disc list-inside text-white/80">${(p.itens || []).map(i => `<li>${esc(i)}</li>`).join('')}</ul>
       <p class="mt-2">Total: <b>${fmt(p.total)}</b> · ${esc(p.forma_pagamento)}</p>
       ${p.carrinho
@@ -583,7 +605,7 @@ async function cancelarMeuPedido(id) {
 
 /* ---------- avisos de status para o cliente ---------- */
 let statusConhecido = {}, canalCliente = null, tentativasCliente = 0;
-const ehClienteComum = () => sessao && !isAdminEmail(sessao.user.email);
+const ehClienteComum = () => !!sessao;   // vale para qualquer conta logada (só os pedidos da própria conta)
 
 function mostrarAviso(texto) {
   let box = document.getElementById('aviso-status');
@@ -603,7 +625,8 @@ function textoStatus(p) {
   const n = numPedido(p.numero);
   const nome = n ? 'Seu pedido ' + n : 'Seu pedido';
   if (p.status === 'preparando') return nome + ' está sendo preparado.';
-  if (p.status === 'entregue') return nome + ' foi entregue. Bom apetite!';
+  if (p.status === 'entregando') return nome + ' saiu para entrega. Já está a caminho!';
+  if (p.status === 'entregue') return nome + ' foi entregue' + (p.status_atualizado_em ? ' às ' + fmtHora(p.status_atualizado_em) : '') + '. Bom apetite!';
   if (p.status === 'cancelado') return nome + ' foi cancelado.';
   return '';
 }
@@ -614,18 +637,37 @@ function registrarStatus(p, silencioso) {
   statusConhecido[p.id] = p.status;
   if (silencioso || antes === p.status) return;
   const txt = textoStatus(p);
-  if (txt) mostrarAviso(txt);
-  if (location.hash === '#conta') renderConta();
+  if (txt && location.hash !== '#admin') {
+    mostrarAviso(txt);
+    avisoDoNavegador(txt);
+  }
+  if (location.hash === '#conta') atualizarMeusPedidos();
+}
+
+// se a aba estiver em segundo plano, mostra também uma notificação do navegador (quando permitida)
+function avisoDoNavegador(txt) {
+  try {
+    if (!document.hidden || !window.Notification || Notification.permission !== 'granted') return;
+    navigator.serviceWorker.getRegistration('/').then(reg => {
+      if (reg) reg.showNotification(NOME_LOJA, { body: txt, icon: '/favicon.png' });
+      else new Notification(NOME_LOJA, { body: txt });
+    }).catch(() => { try { new Notification(NOME_LOJA, { body: txt }); } catch (e) {} });
+  } catch (e) { console.warn(e); }
 }
 
 async function carregarStatusCliente(primeira) {
   if (!ehClienteComum()) return;
   try {
     const { data, error } = await sb.from('gourmet_pedidos')
-      .select('id,numero,status').eq('user_id', sessao.user.id)
+      .select('id,numero,status,status_atualizado_em').eq('user_id', sessao.user.id)
       .order('created_at', { ascending: false }).limit(50);
     if (error || !data) return;
-    data.forEach(p => registrarStatus(p, primeira));
+    let apareceuPedido = false;
+    data.forEach(p => {
+      if (!primeira && statusConhecido[p.id] === undefined) apareceuPedido = true;
+      registrarStatus(p, primeira);
+    });
+    if (apareceuPedido && location.hash === '#conta') atualizarMeusPedidos();
   } catch (e) { console.warn(e); }
 }
 
@@ -636,6 +678,11 @@ async function iniciarAvisosCliente() {
   canalCliente = sb.channel('cliente-pedidos-' + sessao.user.id)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'gourmet_pedidos', filter: 'user_id=eq.' + sessao.user.id },
       payload => registrarStatus(payload.new, false))
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'gourmet_pedidos', filter: 'user_id=eq.' + sessao.user.id },
+      payload => {
+        if (payload.new && payload.new.id !== undefined && statusConhecido[payload.new.id] === undefined) statusConhecido[payload.new.id] = payload.new.status;
+        if (location.hash === '#conta') atualizarMeusPedidos();
+      })
     .subscribe(st => {
       if (st === 'SUBSCRIBED') tentativasCliente = 0;
       if ((st === 'CHANNEL_ERROR' || st === 'TIMED_OUT') && tentativasCliente < 3) {
@@ -1002,8 +1049,9 @@ async function confirmarPedido() {
 
   carrinho = [];
   atualizarContador();
+  if (location.hash === '#conta') atualizarMeusPedidos();   // o pedido novo já aparece na lista
   modal(`
-    <h2 class="serif text-3xl mb-2">Pedido enviado!</h2>
+    <h2 class="serif text-3xl mb-2">Pedido ${ped && ped.numero ? esc(numPedido(ped.numero)) + ' ' : ''}enviado!</h2>
     <p class="text-white/70">Confirme o envio da mensagem no WhatsApp para a loja. Você também pode acompanhar o pedido em <b>Minha conta</b>.</p>
     <button class="btn mt-5" data-act="fechar">Fechar</button>`);
 }
@@ -1227,7 +1275,7 @@ async function excluirFrete(id) {
 
 /* ---------- admin: relatórios ---------- */
 async function renderRelatorios() {
-  const periodos = [['1', 'Hoje'], ['7', '7 dias'], ['30', '30 dias'], ['0', 'Tudo']];
+  const periodos = [['1', 'Hoje'], ['0', 'Tudo']];
   $('admin-conteudo').innerHTML = `
     <div class="glass rounded-2xl p-5">
       <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
@@ -1237,6 +1285,11 @@ async function renderRelatorios() {
           <button class="btn2" data-act="rel-baixar">Baixar planilha</button>
         </div>
       </div>
+      <div class="flex items-end gap-3 mb-4 flex-wrap">
+        <div><label>De</label><input type="date" id="rel-ini" value="${esc(relIni)}" style="width:auto"></div>
+        <div><label>Até</label><input type="date" id="rel-fim" value="${esc(relFim)}" style="width:auto"></div>
+        <button class="${relPeriodo === 'datas' ? 'btn' : 'btn2'}" data-act="rel-datas">Filtrar período</button>
+      </div>
       <div class="flex items-center gap-3 mb-4">
         <input type="checkbox" id="rel-frete" class="chk" data-act="rel-frete" ${relComFrete ? 'checked' : ''}>
         <label for="rel-frete" style="display:inline;margin:0;font-size:14px;color:#fff;cursor:pointer">Incluir o frete nos valores</label>
@@ -1245,7 +1298,10 @@ async function renderRelatorios() {
     </div>`;
 
   let q = sb.from('gourmet_pedidos').select('*').order('created_at', { ascending: false }).limit(2000);
-  if (relPeriodo !== '0') {
+  if (relPeriodo === 'datas') {
+    if (relIni) q = q.gte('created_at', new Date(relIni + 'T00:00:00').toISOString());
+    if (relFim) q = q.lte('created_at', new Date(relFim + 'T23:59:59.999').toISOString());
+  } else if (relPeriodo !== '0') {
     const ini = new Date();
     ini.setHours(0, 0, 0, 0);
     ini.setDate(ini.getDate() - (Number(relPeriodo) - 1));
@@ -1263,6 +1319,12 @@ async function renderRelatorios() {
   const valorPed = p => (Number(p.total) || 0) - (relComFrete ? 0 : freteDoPedido(p));
   const faturamento = validos.reduce((t, p) => t + valorPed(p), 0);
   const ticket = validos.length ? faturamento / validos.length : 0;
+  const freteTotal = validos.reduce((t, p) => t + freteDoPedido(p), 0);          // fretes cobrados nos pedidos válidos
+  const freteCombinarQtd = validos.filter(ehFreteCombinar).length;               // fretes a combinar (valor não registrado)
+  const fmtD = iso => String(iso).split('-').reverse().join('/');
+  const rotuloPeriodo = relPeriodo === 'datas'
+    ? (relIni ? fmtD(relIni) : 'início') + ' a ' + (relFim ? fmtD(relFim) : 'hoje')
+    : (periodos.find(x => x[0] === relPeriodo) || [0, ''])[1];
 
   const prods = {};
   validos.forEach(p => (p.itens || []).forEach(linha => {
@@ -1296,18 +1358,19 @@ async function renderRelatorios() {
 
   relDados = {
     comFrete: relComFrete,
-    periodo: (periodos.find(x => x[0] === relPeriodo) || [0, ''])[1],
-    faturamento, pedidos: validos.length, cancelados, ticket, topProds, listaPags, topClientes
+    periodo: rotuloPeriodo,
+    faturamento, pedidos: validos.length, cancelados, ticket, freteTotal, freteCombinarQtd, topProds, listaPags, topClientes
   };
 
   const linha = (esq, dir) => `<div class="flex justify-between gap-3 py-2 border-b border-white/10 text-sm"><span>${esq}</span><span class="text-white/80 text-right">${dir}</span></div>`;
   const vazio = '<p class="text-white/60 text-sm">Sem dados neste período.</p>';
 
   $('rel-corpo').innerHTML = `
-    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
       <div class="border border-white/15 rounded-xl p-4"><p class="text-white/60 text-sm">Faturamento</p><p class="text-2xl font-semibold">${fmt(faturamento)}</p></div>
       <div class="border border-white/15 rounded-xl p-4"><p class="text-white/60 text-sm">Pedidos</p><p class="text-2xl font-semibold">${validos.length}</p>${cancelados ? `<p class="text-white/50 text-xs">+ ${cancelados} cancelado(s), fora das contas</p>` : ''}</div>
       <div class="border border-white/15 rounded-xl p-4"><p class="text-white/60 text-sm">Ticket médio</p><p class="text-2xl font-semibold">${fmt(ticket)}</p></div>
+      <div class="border border-white/15 rounded-xl p-4"><p class="text-white/60 text-sm">Fretes arrecadados</p><p class="text-2xl font-semibold">${fmt(freteTotal)}</p>${freteCombinarQtd ? `<p class="text-white/50 text-xs">+ ${freteCombinarQtd} pedido(s) com frete a combinar (valor não contado)</p>` : ''}</div>
     </div>
 
     <h3 class="font-semibold mb-2">Produtos mais vendidos</h3>
@@ -1333,6 +1396,8 @@ function baixarRelatorio() {
   L.push([c('Pedidos'), d.pedidos].join(';'));
   L.push([c('Pedidos cancelados (fora das contas)'), d.cancelados].join(';'));
   L.push([c('Ticket médio (R$)'), n(d.ticket)].join(';'));
+  L.push([c('Fretes arrecadados (R$)'), n(d.freteTotal)].join(';'));
+  L.push([c('Pedidos com frete a combinar (valor não contado)'), d.freteCombinarQtd].join(';'));
   L.push('');
   L.push([c('Produtos mais vendidos'), c('Quantidade'), c('Valor (R$)')].join(';'));
   d.topProds.forEach(([nome, x]) => L.push([c(nome), x.qtd, n(x.valor)].join(';')));
@@ -1387,7 +1452,7 @@ async function renderPedidos() {
       <ul class="text-sm mt-2 list-disc list-inside">${(p.itens || []).map(i => `<li>${esc(i)}</li>`).join('')}</ul>
       <p class="mt-2">Total: <b>${fmt(p.total)}</b> · ${esc(p.forma_pagamento)}${p.troco ? ' · troco para ' + fmt(p.troco) : ''}</p>
       <div class="flex gap-2 mt-3 flex-wrap">
-        ${['novo', 'preparando', 'entregue', 'cancelado'].map(s =>
+        ${['novo', 'preparando', 'entregando', 'entregue', 'cancelado'].map(s =>
           `<button class="${p.status === s ? 'btn' : 'btn2'}" data-act="status" data-id="${esc(p.id)}" data-val="${s}">${s}</button>`
         ).join('')}
       </div>
@@ -1766,6 +1831,13 @@ document.addEventListener('click', async (e) => {
   else if (a === 'admin-login') entrarAdmin();
   else if (a === 'rel-baixar') baixarRelatorio();
   else if (a === 'rel-periodo') { relPeriodo = v; renderRelatorios(); }
+  else if (a === 'rel-datas') {
+    const ini = $('rel-ini') ? $('rel-ini').value : '', fim = $('rel-fim') ? $('rel-fim').value : '';
+    if (!ini && !fim) { alert('Escolha pelo menos uma data (De ou Até).'); return; }
+    if (ini && fim && ini > fim) { alert('A data "De" não pode ser depois da data "Até".'); return; }
+    relIni = ini; relFim = fim; relPeriodo = 'datas';
+    renderRelatorios();
+  }
   else if (a === 'admin-tab') { adminTab = v; prodEditando = null; freteEditId = null; renderAdmin(); }
   else if (a === 'taxa-maq-salvar') salvarTaxaMaq();
   else if (a === 'retirada-salvar') salvarRetirada();
