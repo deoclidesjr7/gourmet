@@ -71,6 +71,18 @@ sb.auth.onAuthStateChange((evento, sess) => {
 });
 const isSafari = /iP(hone|ad|od)/.test(navigator.userAgent) || /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
 
+/* ============================================================
+   MERCADO PAGO — PAGAMENTO DENTRO DO SITE (PIX, CRÉDITO, DÉBITO)
+   Está DESLIGADO. Para ligar:
+   1) cole sua CHAVE PÚBLICA (Public Key) em MP_PUBLIC_KEY
+   2) publique as funções no Supabase (veja MERCADOPAGO-PASSO-A-PASSO.md)
+   3) troque MP_ATIVO para true
+   A chave secreta (Access Token) NUNCA fica neste arquivo — só no Supabase.
+   ============================================================ */
+const MP_ATIVO = true;
+const MP_PUBLIC_KEY = 'APP_USR-69b86a74-0e47-4c4d-89ba-f55276d7c547';
+const MP_FUNCAO_URL = SB_URL + '/functions/v1/mp-criar-pagamento';
+
 const NOME_LOJA = 'Ateliê Gourmet & Fit';
 const CONFIG_PADRAO = {
   titulo: 'Gourmet',
@@ -104,6 +116,7 @@ let canal = null;
 let modalTipo = null, modalCat = null;   // para saber se o catálogo está aberto
 let pendingAfterLogin = null;
 let meusPedidos = [];
+let meusPendentes = [];
 
 const $ = id => document.getElementById(id);
 const tira = s => String(s ?? '').trim();
@@ -577,7 +590,27 @@ async function atualizarMeusPedidos() {
   }
   meusPedidos = data || [];
 
-  $('meus').innerHTML = meusPedidos.length ? meusPedidos.map(p => `
+  // pedidos com pagamento online ainda não aprovado (a loja NÃO vê estes)
+  let blocoPend = '';
+  if (MP_ATIVO) {
+    const { data: pend } = await sb.from('gourmet_pedidos_pendentes').select('*')
+      .eq('user_id', sessao.user.id).order('created_at', { ascending: false });
+    meusPendentes = pend || [];
+    blocoPend = meusPendentes.map(p => `
+    <div class="rounded-xl p-4 mb-3 border border-amber-400/50 bg-amber-400/10">
+      <div class="flex justify-between flex-wrap gap-2">
+        <p class="font-semibold">${new Date(p.created_at).toLocaleDateString('pt-BR')} às ${fmtHora(p.created_at)}</p>
+        <p class="text-sm px-3 py-1 rounded-full bg-amber-400 text-black">aguardando pagamento</p>
+      </div>
+      <ul class="text-sm mt-2 list-disc list-inside text-white/80">${((p.dados && p.dados.itens) || []).map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+      <p class="mt-2">Total: <b>${fmt(p.total)}</b></p>
+      <p class="text-xs text-white/60 mt-1">A loja só recebe o pedido depois que o pagamento for aprovado.</p>
+      <button class="btn mt-3" data-act="pagar-pend" data-id="${esc(p.id)}">Pagar agora</button>
+      <button class="btn2 mt-3 ml-2" data-act="descartar-pend" data-id="${esc(p.id)}">Descartar</button>
+    </div>`).join('');
+  }
+
+  $('meus').innerHTML = blocoPend + (meusPedidos.length ? meusPedidos.map(p => `
     <div class="glass rounded-xl p-4 mb-3">
       <div class="flex justify-between flex-wrap gap-2">
         <p class="font-semibold">${p.numero ? '<span class="text-lg">' + esc(numPedido(p.numero)) + '</span> · ' : ''}${new Date(p.created_at).toLocaleDateString('pt-BR')} às ${fmtHora(p.created_at)}</p>
@@ -585,13 +618,14 @@ async function atualizarMeusPedidos() {
       </div>
       ${linhaHorario(p)}
       <ul class="text-sm mt-2 list-disc list-inside text-white/80">${(p.itens || []).map(i => `<li>${esc(i)}</li>`).join('')}</ul>
-      <p class="mt-2">Total: <b>${fmt(p.total)}</b> · ${esc(p.forma_pagamento)}</p>
+      <p class="mt-2">Total: <b>${fmt(p.total)}</b> · ${esc(p.forma_pagamento)}${p.pagamento_status === 'pago' ? ' · <span class="text-emerald-300">✔ pago</span>' : ''}</p>
       ${p.carrinho
         ? `<button class="btn mt-3" data-act="reorder" data-id="${esc(p.id)}">Pedir de novo</button>`
         : '<p class="text-white/50 text-xs mt-2">Pedidos feitos antes desta atualização não podem ser repetidos.</p>'}
-      ${p.status === 'novo' ? `<button class="btn2 mt-3 ml-2" data-act="cancelar-meu" data-id="${esc(p.id)}">Cancelar pedido</button>` : ''}
+      ${p.status === 'novo' && p.pagamento_status !== 'pago' ? `<button class="btn2 mt-3 ml-2" data-act="cancelar-meu" data-id="${esc(p.id)}">Cancelar pedido</button>` : ''}
+      ${p.pagamento_status === 'pago' && p.status === 'novo' ? '<p class="text-white/50 text-xs mt-2">Pedido pago online: para cancelar, fale com a loja pelo WhatsApp.</p>' : ''}
     </div>`).join('')
-    : '<p class="text-white/60">Você ainda não fez nenhum pedido.</p>';
+    : (blocoPend ? '' : '<p class="text-white/60">Você ainda não fez nenhum pedido.</p>'));
 }
 
 async function cancelarMeuPedido(id) {
@@ -941,12 +975,14 @@ function abrirCheckout() {
     <label>Endereço que será enviado (confira)</label>
     <textarea id="c-end" rows="3">${esc(m.endereco || '')}</textarea>
     </div>
-    <label>Forma de pagamento (pago na entrega)</label>
+    <label>Forma de pagamento${MP_ATIVO ? '' : ' (pago na entrega)'}</label>
     <select id="c-pag" onchange="$('c-troco-wrap').style.display = this.value === 'dinheiro' ? 'block' : 'none'">
-      <option value="pix">PIX</option>
-      <option value="cartao">Cartão (maquininha, +${fmt(config.taxaMaquininha)})</option>
-      <option value="dinheiro">Dinheiro</option>
+      ${MP_ATIVO ? '<option value="mp">Pagar agora pelo site (PIX, crédito ou débito)</option>' : ''}
+      <option value="pix">PIX${MP_ATIVO ? ' na entrega' : ''}</option>
+      <option value="cartao">Cartão${MP_ATIVO ? ' na entrega' : ''} (maquininha, +${fmt(config.taxaMaquininha)})</option>
+      <option value="dinheiro">Dinheiro${MP_ATIVO ? ' na entrega' : ''}</option>
     </select>
+    ${MP_ATIVO ? '<p id="c-mp-aviso" class="text-sm text-white/70 mt-2" style="display:none">🔒 Na próxima tela você escolhe PIX, crédito ou débito e paga sem sair do site. A loja só recebe o pedido depois que o pagamento for aprovado.</p>' : ''}
     <div id="c-troco-wrap" style="display:none">
       <label>Precisa de troco? Para quanto?</label>
       <input id="c-troco" inputmode="decimal" placeholder="Ex: 50,00">
@@ -978,6 +1014,7 @@ function atualizarResumo() {
   const achado = retirada ? null : acharFrete(textoEnd, cid, bai);
   const f = retirada ? 0 : (achado ? (Number(achado.valor) || 0) : null);
   const taxa = pag === 'cartao' ? (Number(config.taxaMaquininha) || 0) : 0;
+  if ($('c-mp-aviso')) $('c-mp-aviso').style.display = pag === 'mp' ? 'block' : 'none';
   let h = '<p>Subtotal: ' + fmt(subtotal()) + '</p>';
   if (retirada) h += '<p>Retirada no local: sem frete</p>';
   else if (!bai && !textoEnd) h += '<p>Frete: informe cidade e bairro para calcular</p>';
@@ -987,6 +1024,116 @@ function atualizarResumo() {
   h += '<p class="text-white font-semibold">Total' + (f === null ? ' (sem o frete)' : '') + ': ' + fmt(subtotal() + (f || 0) + taxa) + '</p>';
   if (tira(config.tempoPreparo || '')) h += '<p class="mt-2 text-emerald-300">⏱ Tempo de preparo: ' + esc(tira(config.tempoPreparo)) + '</p>';
   box.innerHTML = h;
+}
+
+/* ---------- pagamento online (Mercado Pago Bricks) ---------- */
+let mpInst = null, mpBrick = null, mpMsgWhats = '';
+function carregarMP() {
+  if (window.MercadoPago) return Promise.resolve();
+  return new Promise((ok, erro) => {
+    const sc = document.createElement('script');
+    sc.src = 'https://sdk.mercadopago.com/js/v2';
+    sc.onload = ok;
+    sc.onerror = () => erro(new Error('Não foi possível carregar o Mercado Pago'));
+    document.head.appendChild(sc);
+  });
+}
+
+async function abrirPagamento(pendId, total, msgWhats) {
+  mpMsgWhats = msgWhats || '';
+  const tempo = tira(config.tempoPreparo || '');
+  modal(`
+    <h2 class="serif text-3xl mb-1">Pagamento</h2>
+    <p class="text-white/70 mb-1">Total <b>${fmt(total)}</b></p>
+    ${tempo ? `<p class="text-emerald-300 text-sm mb-1">⏱ Tempo de preparo: ${esc(tempo)}</p>` : ''}
+    <p class="text-xs text-white/50 mb-4">Seu pedido só é enviado para a loja depois que o pagamento for aprovado.</p>
+    <div id="mp-brick"><p class="text-white/60">Carregando formas de pagamento...</p></div>
+    <div id="mp-pos"></div>
+    <button class="btn2 mt-4" data-act="fechar">Pagar depois</button>
+    <p class="text-xs text-white/50 mt-2">Se fechar, você pode pagar depois em <b>Minha conta</b>.</p>`, true);
+  try {
+    if (!MP_PUBLIC_KEY) throw new Error('Chave pública do Mercado Pago não configurada');
+    await carregarMP();
+    mpInst = mpInst || new MercadoPago(MP_PUBLIC_KEY, { locale: 'pt-BR' });
+    const bricks = mpInst.bricks();
+    $('mp-brick').innerHTML = '';
+    mpBrick = await bricks.create('payment', 'mp-brick', {
+      initialization: { amount: Number(total), payer: { email: sessao?.user?.email || '' } },
+      customization: {
+        paymentMethods: { creditCard: 'all', debitCard: 'all', bankTransfer: 'all' },
+        visual: { style: { theme: 'dark' } }
+      },
+      callbacks: {
+        onReady: () => {},
+        onSubmit: ({ formData }) => new Promise(async (resolve, reject) => {
+          try {
+            const r = await fetch(MP_FUNCAO_URL, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + (sessao?.access_token || SB_KEY),
+                'apikey': SB_KEY
+              },
+              body: JSON.stringify({ pendenteId: pendId, formData })
+            });
+            const j = await r.json();
+            if (!r.ok || !j.id) throw new Error(j.erro || 'Falha ao processar o pagamento');
+            if (j.status === 'rejected') {
+              alert('Pagamento recusado. Confira os dados ou tente outra forma de pagamento.');
+              reject();
+              return;
+            }
+            resolve();
+            await mostrarStatusPagamento(j.id);
+            if (j.status === 'approved' && j.numero) pagamentoConfirmado(j.numero);
+            else aguardarConfirmacao(j.id);
+          } catch (err) {
+            console.error(err);
+            alert('Não foi possível processar o pagamento. Tente novamente.');
+            reject();
+          }
+        }),
+        onError: err => console.error(err)
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    if ($('mp-brick')) $('mp-brick').innerHTML = '<p class="text-red-300">Não foi possível abrir o pagamento agora. Tente de novo em Minha conta ou fale conosco pelo WhatsApp.</p>';
+  }
+}
+
+async function mostrarStatusPagamento(paymentId) {
+  try { if (mpBrick) await mpBrick.unmount(); } catch (e) {}
+  mpBrick = await mpInst.bricks().create('statusScreen', 'mp-brick', {
+    initialization: { paymentId: String(paymentId) },
+    customization: { visual: { style: { theme: 'dark' } } }
+  });
+}
+
+// pagamento aprovado: só agora o pedido existe para a loja (aparece no painel e dispara os avisos)
+function pagamentoConfirmado(numero) {
+  if (location.hash === '#conta') atualizarMeusPedidos();
+  const box = $('mp-pos'); if (!box) return;
+  const msg = '*Novo pedido (PAGO ONLINE)*\n*' + numPedido(numero) + '*\n\n' + mpMsgWhats;
+  const url = 'https://wa.me/' + config.whatsapp + '?text=' + encodeURIComponent(msg);
+  box.innerHTML = `
+    <div class="mt-4 rounded-xl border border-emerald-400/40 bg-emerald-400/10 p-4">
+      <p class="font-semibold text-emerald-300">✔ Pagamento aprovado! Pedido ${esc(numPedido(numero))} enviado para a loja.</p>
+      <a class="btn mt-3 inline-block" href="${url}" target="_blank" rel="noopener">Avisar a loja no WhatsApp</a>
+    </div>`;
+}
+
+// PIX (e outros) confirmam depois: espera a loja receber o pedido (o servidor só cria o pedido quando aprovado)
+async function aguardarConfirmacao(paymentId) {
+  const box = $('mp-pos'); if (!box) return;
+  box.innerHTML = '<p class="text-sm text-white/60 mt-3">Aguardando a confirmação do pagamento... Esta tela atualiza sozinha.</p>';
+  for (let i = 0; i < 120; i++) {              // até ~10 minutos
+    await new Promise(r => setTimeout(r, 5000));
+    if (!$('mp-pos')) return;                   // cliente fechou a tela
+    const { data } = await sb.from('gourmet_pedidos').select('numero').eq('mp_payment_id', String(paymentId)).maybeSingle();
+    if (data && data.numero) { pagamentoConfirmado(data.numero); return; }
+  }
+  if ($('mp-pos')) $('mp-pos').innerHTML = '<p class="text-sm text-white/60 mt-3">Assim que o pagamento for confirmado, o pedido aparece em <b>Minha conta</b>.</p>';
 }
 
 async function confirmarPedido() {
@@ -1011,7 +1158,9 @@ async function confirmarPedido() {
   const total = subtotal() + (frete || 0) + taxa;
   const t = Number(trocoTxt.replace(',', '.'));
   const troco = pag === 'dinheiro' && t > 0 ? t : null;
-  const rotulo = { pix: 'PIX na entrega', cartao: 'Cartão na entrega', dinheiro: 'Dinheiro na entrega' }[pag];
+  const online = pag === 'mp';
+  const rotulo = { pix: 'PIX na entrega', cartao: 'Cartão na entrega', dinheiro: 'Dinheiro na entrega', mp: 'Pagamento online (PIX/cartão)' }[pag];
+  if (online && !MP_ATIVO) { alert('Pagamento online indisponível no momento.'); return; }
   const itens = carrinho.map(i => `${i.qtd}x ${i.nome} (${fmt(i.preco * i.qtd)})`);
   const itensGuardados = carrinho.map(i => ({ id: i.id, qtd: i.qtd }));
   const linhaFrete = retirada
@@ -1020,8 +1169,15 @@ async function confirmarPedido() {
     ? 'Frete a combinar' + (localFrete ? ' (' + localFrete + ')' : '')
     : 'Frete: ' + fmt(frete) + ' (' + localFrete + ')';
 
-  const win = window.open('', '_blank');
-  const { data: ped, error } = await sb.from('gourmet_pedidos').insert({
+  const corpoMsg = (pagTxt) => {
+    let m = itens.join('\n') + '\n\nSubtotal: ' + fmt(subtotal());
+    m += retirada ? '\nRetirada no local (sem frete)' : freteCombinar ? '\n*⚠ FRETE A COMBINAR*' + (localFrete ? ' (' + localFrete + ')' : '') : '\nFrete: ' + fmt(frete);
+    if (taxa) m += '\nTaxa da maquininha: ' + fmt(taxa);
+    m += '\n*Total' + (freteCombinar ? ' (sem o frete)' : '') + ': ' + fmt(total) + '*\n\nCliente: ' + nome + '\nWhatsApp: ' + whats + '\nConversar: ' + linkZap(whats) + (retirada ? '\n🏪 *RETIRADA NO LOCAL*: ' + config.retiradaEndereco : '\nEndereço: ' + end + '\nMapa: ' + linkMapa(end)) + '\nPagamento: ' + pagTxt;
+    if (troco) m += '\nTroco para: ' + fmt(troco);
+    return m;
+  };
+  const dadosPedido = {
     user_id: sessao.user.id,
     cliente_nome: nome,
     whatsapp: whats,
@@ -1031,7 +1187,27 @@ async function confirmarPedido() {
     total,
     forma_pagamento: rotulo,
     troco
-  }).select('numero').single();
+  };
+
+  // ---- Pagamento online: o pedido fica RETIDO e só é enviado à loja depois que o pagamento for aprovado ----
+  if (online) {
+    const { data: pend, error: errPend } = await sb.from('gourmet_pedidos_pendentes')
+      .insert({ user_id: sessao.user.id, dados: dadosPedido, total, whats_msg: corpoMsg('PAGO ONLINE ✅') })
+      .select('id').single();
+    if (errPend) {
+      console.error(errPend);
+      alert('Não foi possível iniciar o pagamento. Tente novamente.');
+      return;
+    }
+    sb.auth.updateUser({ data: retirada ? { nome, whatsapp: whats } : { nome, whatsapp: whats, endereco: end } }).catch(() => {});
+    carrinho = [];
+    atualizarContador();
+    abrirPagamento(pend.id, total, corpoMsg('PAGO ONLINE ✅'));
+    return;
+  }
+
+  const win = window.open('', '_blank');
+  const { data: ped, error } = await sb.from('gourmet_pedidos').insert(dadosPedido).select('numero').single();
 
   if (error) {
     if (win) win.close();
@@ -1042,11 +1218,7 @@ async function confirmarPedido() {
 
   sb.auth.updateUser({ data: retirada ? { nome, whatsapp: whats } : { nome, whatsapp: whats, endereco: end } }).catch(() => {});
 
-  let msg = '*Novo pedido*\n' + (ped && ped.numero ? '*' + numPedido(ped.numero) + '*\n' : '') + '\n' + itens.join('\n') + '\n\nSubtotal: ' + fmt(subtotal());
-  msg += retirada ? '\nRetirada no local (sem frete)' : freteCombinar ? '\n*⚠ FRETE A COMBINAR*' + (localFrete ? ' (' + localFrete + ')' : '') : '\nFrete: ' + fmt(frete);
-  if (taxa) msg += '\nTaxa da maquininha: ' + fmt(taxa);
-  msg += '\n*Total' + (freteCombinar ? ' (sem o frete)' : '') + ': ' + fmt(total) + '*\n\nCliente: ' + nome + '\nWhatsApp: ' + whats + '\nConversar: ' + linkZap(whats) + (retirada ? '\n🏪 *RETIRADA NO LOCAL*: ' + config.retiradaEndereco : '\nEndereço: ' + end + '\nMapa: ' + linkMapa(end)) + '\nPagamento: ' + rotulo;
-  if (troco) msg += '\nTroco para: ' + fmt(troco);
+  const msg = '*Novo pedido*\n' + (ped && ped.numero ? '*' + numPedido(ped.numero) + '*\n' : '') + '\n' + corpoMsg(rotulo);
 
   const url = 'https://wa.me/' + config.whatsapp + '?text=' + encodeURIComponent(msg);
   if (win) win.location.href = url; else location.href = url;
@@ -1455,7 +1627,7 @@ async function renderPedidos() {
       </div>
       <p class="text-sm text-white/80 mt-1"><a href="${linkMapa(p.endereco)}" target="_blank" rel="noopener" class="underline">📍 ${esc(p.endereco)}</a></p>
       <ul class="text-sm mt-2 list-disc list-inside">${(p.itens || []).map(i => `<li>${esc(i)}</li>`).join('')}</ul>
-      <p class="mt-2">Total: <b>${fmt(p.total)}</b> · ${esc(p.forma_pagamento)}${p.troco ? ' · troco para ' + fmt(p.troco) : ''}</p>
+      <p class="mt-2">Total: <b>${fmt(p.total)}</b> · ${esc(p.forma_pagamento)}${p.pagamento_status === 'pago' ? ' · <span class="text-emerald-300 font-semibold">✔ PAGO ONLINE</span>' : ''}${p.troco ? ' · troco para ' + fmt(p.troco) : ''}</p>
       <div class="flex gap-2 mt-3 flex-wrap">
         ${['novo', 'preparando', 'entregando', 'entregue', 'cancelado'].map(s =>
           `<button class="${p.status === s ? 'btn' : 'btn2'}" data-act="status" data-id="${esc(p.id)}" data-val="${s}">${s}</button>`
@@ -1859,6 +2031,12 @@ document.addEventListener('click', async (e) => {
   else if (a === 'cadastro-enviar') cadastrarCliente();
   else if (a === 'reorder') reorderPedido(id);
   else if (a === 'cancelar-meu') cancelarMeuPedido(id);
+  else if (a === 'pagar-pend') { const pd = meusPendentes.find(x => String(x.id) === String(id)); if (pd) abrirPagamento(pd.id, pd.total, pd.whats_msg); }
+  else if (a === 'descartar-pend') {
+    if (!confirm('Descartar este pedido que ainda não foi pago?')) return;
+    await sb.from('gourmet_pedidos_pendentes').delete().eq('id', id);
+    atualizarMeusPedidos();
+  }
   else if (a === 'sair') sair();
   else if (a === 'toggle-senha') {
     const inp = el.parentElement.querySelector('input');
