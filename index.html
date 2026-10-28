@@ -83,7 +83,8 @@ const CONFIG_PADRAO = {
   taxaMaquininha: 3,
   retiradaAtiva: false,
   retiradaEndereco: 'Penha - SC',
-  pix: ''
+  pix: '',
+  tempoPreparo: ''
 };
 
 let config = { ...CONFIG_PADRAO };
@@ -93,6 +94,7 @@ let freteEditId = null;
 let carrinho = [];
 let sessao = null;
 let adminTab = 'pedidos';
+let aparenciaSub = 'visual';   // sub-aba de Aparência: 'visual' ou 'tempo'
 let relPeriodo = '1';      // '1' = hoje, '0' = tudo, 'datas' = período escolhido
 let relIni = '', relFim = '';
 let relComFrete = true;
@@ -628,7 +630,8 @@ function textoStatus(p) {
   if (p.status === 'entregando') return nome + ' saiu para entrega. Já está a caminho!';
   if (p.status === 'entregue') return nome + ' foi entregue' + (p.status_atualizado_em ? ' às ' + fmtHora(p.status_atualizado_em) : '') + '. Bom apetite!';
   if (p.status === 'cancelado') return nome + ' foi cancelado.';
-  return '';
+  if (p.status === 'novo') return '';
+  return p.status ? nome + ' mudou para: ' + p.status + '.' : '';   // qualquer outro status também avisa
 }
 
 function registrarStatus(p, silencioso) {
@@ -982,6 +985,7 @@ function atualizarResumo() {
   else h += '<p>Frete: ' + fmt(f) + (achado ? ' (' + esc(achado.bairro) + ')' : '') + '</p>';
   if (taxa) h += '<p>Taxa da maquininha: ' + fmt(taxa) + '</p>';
   h += '<p class="text-white font-semibold">Total' + (f === null ? ' (sem o frete)' : '') + ': ' + fmt(subtotal() + (f || 0) + taxa) + '</p>';
+  if (tira(config.tempoPreparo || '')) h += '<p class="mt-2 text-emerald-300">⏱ Tempo de preparo: ' + esc(tira(config.tempoPreparo)) + '</p>';
   box.innerHTML = h;
 }
 
@@ -1053,6 +1057,7 @@ async function confirmarPedido() {
   modal(`
     <h2 class="serif text-3xl mb-2">Pedido ${ped && ped.numero ? esc(numPedido(ped.numero)) + ' ' : ''}enviado!</h2>
     <p class="text-white/70">Confirme o envio da mensagem no WhatsApp para a loja. Você também pode acompanhar o pedido em <b>Minha conta</b>.</p>
+    ${tira(config.tempoPreparo || '') ? `<p class="mt-3 text-emerald-300">⏱ Tempo de preparo: ${esc(tira(config.tempoPreparo))}</p>` : ''}
     <button class="btn mt-5" data-act="fechar">Fechar</button>`);
 }
 
@@ -1616,7 +1621,31 @@ if ('serviceWorker' in navigator) {
 
 /* ---------- admin: aparência ---------- */
 function renderAparencia() {
+  const subs = [['visual', 'Visual da loja'], ['tempo', 'Tempo de preparo']];
+  const menu = `
+  <div class="flex gap-2 flex-wrap mb-4">
+    ${subs.map(([k, n]) => `<button class="${aparenciaSub === k ? 'btn' : 'btn2'}" data-act="aparencia-sub" data-val="${k}">${n}</button>`).join('')}
+  </div>`;
+
+  if (aparenciaSub === 'tempo') {
+    $('admin-conteudo').innerHTML = `
+    ${menu}
+    <div class="glass rounded-2xl p-5">
+      <h2 class="text-xl font-semibold mb-1">Tempo de preparo</h2>
+      <p class="text-sm text-white/60">Este texto aparece para o cliente quando ele finaliza o pedido (e na confirmação do pedido). Deixe vazio para não mostrar nada.</p>
+      <label>Tempo de preparo</label>
+      <input id="a-tempo" value="${esc(config.tempoPreparo || '')}" placeholder="Ex.: 40 a 50 minutos, 1 hora, 2 dias">
+      <p class="text-sm text-white/60 mt-3">Como o cliente vai ver:</p>
+      <p class="mt-1">⏱ Tempo de preparo: <b id="a-tempo-previa">${esc(config.tempoPreparo || '—')}</b></p>
+      <button class="btn mt-6" data-act="tempo-salvar">Salvar tempo de preparo</button>
+    </div>`;
+    const inp = $('a-tempo');
+    if (inp) inp.addEventListener('input', () => { $('a-tempo-previa').textContent = tira(inp.value) || '—'; });
+    return;
+  }
+
   $('admin-conteudo').innerHTML = `
+  ${menu}
   <div class="glass rounded-2xl p-5">
     <label>Nome da loja (aparece no lugar do título)</label>
     <input id="a-titulo" value="${esc(config.titulo)}">
@@ -1636,6 +1665,15 @@ function renderAparencia() {
     <input id="a-pix" value="${esc(config.pix)}">
     <button class="btn mt-6" data-act="config-salvar">Salvar aparência</button>
   </div>`;
+}
+
+async function salvarTempoPreparo() {
+  try {
+    await mesclarConfig({ tempoPreparo: tira($('a-tempo').value) });
+    alert('Tempo de preparo salvo.');
+  } catch (e) {
+    alert('Erro ao salvar: ' + e.message);
+  }
 }
 
 async function salvarConfig() {
@@ -1838,6 +1876,8 @@ document.addEventListener('click', async (e) => {
     relIni = ini; relFim = fim; relPeriodo = 'datas';
     renderRelatorios();
   }
+  else if (a === 'aparencia-sub') { aparenciaSub = v; renderAparencia(); }
+  else if (a === 'tempo-salvar') salvarTempoPreparo();
   else if (a === 'admin-tab') { adminTab = v; prodEditando = null; freteEditId = null; renderAdmin(); }
   else if (a === 'taxa-maq-salvar') salvarTaxaMaq();
   else if (a === 'retirada-salvar') salvarRetirada();
