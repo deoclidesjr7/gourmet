@@ -940,26 +940,35 @@ document.addEventListener('change', (e) => {
 /* ---------- forma de pagamento: "Pagar online" ou "Pagar na entrega" ---------- */
 // valores de #c-pag: mp_pix, mp_credito, mp_debito (online)  |  pix, cartao, dinheiro (na entrega)
 const ehOnline = v => String(v || '').startsWith('mp_');
+let pagGrupo = '';   // '' (nenhum escolhido), 'online' ou 'entrega'
+let pagTravado = false;   // true depois que o pagamento online foi aberto na própria tela
 function desenharPagamento() {
   const box = $('c-pag-ui'), campo = $('c-pag');
   if (!box || !campo) return;
-  const v = campo.value, on = ehOnline(v);
+  const v = campo.value, on = pagGrupo === 'online';
   const bt = (ativo, act, val, txt, extra) =>
     `<button type="button" class="${ativo ? 'btn' : 'btn2'} btn-pag ${extra || ''}" data-act="${act}" data-val="${val}">${txt}</button>`;
   let h = '';
   if (MP_ATIVO) {
     h += `<div class="grid grid-cols-2 gap-2">
-      ${bt(on, 'pag-grupo', 'online', '💳 Pagar online', 'btn-pag-grande')}
-      ${bt(!on, 'pag-grupo', 'entrega', '🛵 Pagar na entrega', 'btn-pag-grande')}
+      ${bt(pagGrupo === 'online', 'pag-grupo', 'online', '💳 Pagar online', 'btn-pag-grande')}
+      ${bt(pagGrupo === 'entrega', 'pag-grupo', 'entrega', '🛵 Pagar na entrega', 'btn-pag-grande')}
     </div>`;
   }
   const subs = on
     ? [['mp_pix', 'PIX'], ['mp_credito', 'Cartão de crédito'], ['mp_debito', 'Cartão de débito']]
     : [['pix', 'PIX'], ['cartao', 'Cartão (+' + fmt(config.taxaMaquininha) + ')'], ['dinheiro', 'Dinheiro']];
-  h += `<div class="grid grid-cols-3 gap-2 ${MP_ATIVO ? 'mt-2' : ''}">${subs.map(([val, txt]) => bt(v === val, 'pag-sel', val, txt)).join('')}</div>`;
+  if (pagGrupo) h += `<div class="grid grid-cols-3 gap-2 ${MP_ATIVO ? 'mt-2' : ''}">${subs.map(([val, txt]) => bt(v === val, 'pag-sel', val, txt)).join('')}</div>`;
   box.innerHTML = h;
   const tw = $('c-troco-wrap'); if (tw) tw.style.display = v === 'dinheiro' ? 'block' : 'none';
-  const av = $('c-mp-aviso'); if (av) av.style.display = on ? 'block' : 'none';
+  const cf = $('c-confirmar'); if (cf) cf.style.display = ehOnline(v) ? 'none' : '';
+  const pn = $('c-pag-painel');
+  if (pn && !pagTravado) {
+    pn.innerHTML = ehOnline(v)
+      ? `<p class="text-sm text-white/70">🔒 Você paga sem sair do site. A loja só recebe o pedido depois que o pagamento for aprovado.</p>
+         <button type="button" class="btn w-full mt-3" data-act="gerar-pag">${v === 'mp_pix' ? 'Gerar QR Code PIX' : 'Continuar para o pagamento'}</button>`
+      : '';
+  }
 }
 function definirPagamento(v) {
   const campo = $('c-pag'); if (!campo) return;
@@ -970,8 +979,11 @@ function definirPagamento(v) {
 
 function abrirCheckout() {
   const m = sessao?.user?.user_metadata || {};
+  pagGrupo = MP_ATIVO ? '' : 'entrega';
+  pagTravado = false;
   modal(`
     <h2 class="serif text-3xl mb-4">Finalizar pedido</h2>
+    <div id="c-form">
     <label>Seu nome</label>
     <input id="c-nome" value="${esc(m.nome || '')}">
     <label>WhatsApp (com DDD)</label>
@@ -1004,19 +1016,19 @@ function abrirCheckout() {
     <label>Endereço que será enviado (confira)</label>
     <textarea id="c-end" rows="3">${esc(m.endereco || '')}</textarea>
     </div>
+    </div>
     <label>Forma de pagamento</label>
-    <input type="hidden" id="c-pag" value="${MP_ATIVO ? 'mp_pix' : 'pix'}">
+    <input type="hidden" id="c-pag" value="${MP_ATIVO ? '' : 'pix'}">
     <div id="c-pag-ui"></div>
-    ${MP_ATIVO ? '<p id="c-mp-aviso" class="text-sm text-white/70 mt-2" style="display:none">🔒 Na próxima tela você paga sem sair do site. A loja só recebe o pedido depois que o pagamento for aprovado.</p>' : ''}
+    <div id="c-pag-painel" class="mt-3"></div>
     <div id="c-troco-wrap" style="display:none">
       <label>Precisa de troco? Para quanto?</label>
       <input id="c-troco" inputmode="decimal" placeholder="Ex: 50,00">
     </div>
-    ${config.pix ? `<p class="text-sm text-white/70 mt-3">Chave PIX: ${esc(config.pix)}</p>` : ''}
     <div id="c-resumo" class="mt-4 text-white/70"></div>
     <div class="flex gap-3 mt-4 flex-wrap">
-      <button class="btn" data-act="confirmar">Confirmar pedido</button>
-      <button class="btn2" data-act="carrinho">Voltar</button>
+      <button id="c-confirmar" class="btn" data-act="confirmar">Confirmar pedido</button>
+      <button id="c-voltar" class="btn2" data-act="carrinho">Voltar</button>
     </div>`);
   desenharPagamento();
   atualizarResumo();
@@ -1075,12 +1087,31 @@ async function abrirPagamento(pendId, total, msgWhats, modo) {
     <h2 class="serif text-3xl mb-1">${titulo}</h2>
     <p class="text-white/70 mb-1">Total <b>${fmt(total)}</b></p>
     ${tempo ? `<p class="text-emerald-300 text-sm mb-1">⏱ Tempo de preparo: ${esc(tempo)}</p>` : ''}
-    <p class="text-xs text-white/50 mb-4">Seu pedido só é enviado para a loja depois que o pagamento for aprovado.</p>
+    <p id="mp-nota" class="text-xs text-white/50 mb-4">Seu pedido só é enviado para a loja depois que o pagamento for aprovado.</p>
     <div id="mp-brick"><p class="text-white/60">Carregando...</p></div>
     <div id="mp-pos"></div>
-    <button class="btn2 mt-4" data-act="fechar">Pagar depois</button>
-    <p class="text-xs text-white/50 mt-2">Se fechar, você pode pagar depois em <b>Minha conta</b>.</p>`, true);
+    <button id="mp-fechar" class="btn2 mt-4" data-act="fechar">Pagar depois</button>
+    <p id="mp-depois" class="text-xs text-white/50 mt-2">Se fechar, você pode pagar depois em <b>Minha conta</b>.</p>`);
+  executarPagamento(pendId, total, modo, msgWhats);
+}
 
+// abre o pagamento (QR Code ou cartão) na própria tela de finalizar pedido, logo abaixo das opções
+function embutirPagamento(pendId, total, msgWhats, modo) {
+  const pn = $('c-pag-painel'); if (!pn) { abrirPagamento(pendId, total, msgWhats, modo); return; }
+  pagTravado = true;
+  ['c-form', 'c-pag-ui'].forEach(i => { const e = $(i); if (e) { e.style.pointerEvents = 'none'; e.style.opacity = '.55'; } });
+  pn.innerHTML = `
+    <p id="mp-nota" class="text-xs text-white/50 mb-3">Seu pedido só é enviado para a loja depois que o pagamento for aprovado.</p>
+    <div id="mp-brick"><p class="text-white/60">Carregando...</p></div>
+    <div id="mp-pos"></div>
+    <p id="mp-depois" class="text-xs text-white/50 mt-3">Se fechar, você pode pagar depois em <b>Minha conta</b>.</p>`;
+  const vb = $('c-voltar'); if (vb) { vb.textContent = 'Pagar depois'; vb.dataset.act = 'fechar'; }
+  try { pn.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) {}
+  executarPagamento(pendId, total, modo, msgWhats);
+}
+
+async function executarPagamento(pendId, total, modo, msgWhats) {
+  mpMsgWhats = msgWhats || '';
   if (modo === 'pix') { gerarPix(pendId); return; }
 
   try {
@@ -1197,6 +1228,10 @@ function pagamentoConfirmado(numero) {
   if (location.hash === '#conta') atualizarMeusPedidos();
   const box = $('mp-pos'); if (!box) return;
   if ($('mp-brick') && $('pix-codigo')) $('mp-brick').innerHTML = '';   // some o QR Code depois de pago
+  if ($('mp-nota')) $('mp-nota').style.display = 'none';
+  if ($('mp-depois')) $('mp-depois').style.display = 'none';
+  if ($('mp-fechar')) $('mp-fechar').textContent = 'Fechar';
+  const vb = $('c-voltar'); if (vb) { vb.textContent = 'Fechar'; vb.dataset.act = 'fechar'; }
   const msg = '*Novo pedido (PAGO ONLINE)*\n*' + numPedido(numero) + '*\n\n' + mpMsgWhats;
   const url = 'https://wa.me/' + config.whatsapp + '?text=' + encodeURIComponent(msg);
   box.innerHTML = `
@@ -1230,6 +1265,7 @@ async function confirmarPedido() {
   const trocoTxt = tira($('c-troco')?.value);
 
   if (!nome || !whats || !end) { alert('Preencha nome, WhatsApp e endereço.'); return; }
+  if (!pag) { alert('Escolha a forma de pagamento: Pagar online ou Pagar na entrega.'); return; }
   if (!carrinho.length) { alert('Seu carrinho está vazio.'); return; }
 
   const taxa = pag === 'cartao' ? (Number(config.taxaMaquininha) || 0) : 0;
@@ -1288,7 +1324,7 @@ async function confirmarPedido() {
     sb.auth.updateUser({ data: retirada ? { nome, whatsapp: whats } : { nome, whatsapp: whats, endereco: end } }).catch(() => {});
     carrinho = [];
     atualizarContador();
-    abrirPagamento(pend.id, total, corpoMsg('PAGO ONLINE ✅'), pag.replace('mp_', ''));
+    embutirPagamento(pend.id, total, corpoMsg('PAGO ONLINE ✅'), pag.replace('mp_', ''));
     return;
   }
 
@@ -2104,8 +2140,13 @@ document.addEventListener('click', async (e) => {
   else if (a === 'remover') { carrinho = carrinho.filter(i => i.id !== id); abrirCarrinho(); }
   else if (a === 'checkout') iniciarCheckout();
   else if (a === 'confirmar') confirmarPedido();
-  else if (a === 'pag-grupo') definirPagamento(v === 'online' ? 'mp_pix' : 'pix');
+  else if (a === 'pag-grupo') { pagGrupo = v; definirPagamento(''); }
   else if (a === 'pag-sel') definirPagamento(v);
+  else if (a === 'gerar-pag') {
+    el.disabled = true; el.textContent = 'Preparando...';
+    await confirmarPedido();
+    if (el.isConnected) desenharPagamento();   // não abriu (faltou algum dado): volta o botão
+  }
   else if (a === 'pix-copiar') copiarPix();
   else if (a === 'pix-novo') gerarPix(id);
   else if (a === 'sug-rua') escolherRua(Number(el.dataset.i));
