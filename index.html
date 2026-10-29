@@ -51,6 +51,8 @@
   .btn-pag { white-space: normal !important; width: 100%; padding: 12px 6px !important; font-size: 14px; line-height: 1.2; text-align: center; }
   .btn-pag-grande { font-size: 16px; padding: 14px 8px !important; }
   .pre-oculto { height: 0; overflow: hidden; opacity: 0; pointer-events: none; }
+  #mp-pre-credito:not(.pre-oculto), #mp-pre-debito:not(.pre-oculto), #mp-brick:not(:empty) { margin-top: 12px; padding: 10px; background: #09090b; border: 1px solid rgba(255,255,255,.18); border-radius: 18px; overflow: hidden; }
+  #c-pag-ui .btn-pag { border-radius: 14px; }
 </style>
 </head>
 <body>
@@ -961,7 +963,7 @@ function desenharPagamento() {
     </div>`;
   }
   const subs = on
-    ? [['mp_pix', 'PIX'], ['mp_credito', 'Cartão de crédito'], ['mp_debito', 'Cartão de débito']]
+    ? [['mp_pix', '⚡ PIX'], ['mp_credito', '💳 Crédito'], ['mp_debito', '💳 Débito']]
     : [['pix', 'PIX'], ['cartao', 'Cartão (+' + fmt(config.taxaMaquininha) + ')'], ['dinheiro', 'Dinheiro']];
   if (pagGrupo) h += `<div class="grid grid-cols-3 gap-2 ${MP_ATIVO ? 'mt-2' : ''}">${subs.map(([val, txt]) => bt(v === val, 'pag-sel', val, txt)).join('')}</div>`;
   box.innerHTML = h;
@@ -1261,7 +1263,28 @@ function opcoesCartao(modo, total, obterPendId) {
     initialization: { amount: Number(total), payer: { email: sessao?.user?.email || '' } },
     customization: {
       paymentMethods: modo === 'debito' ? { debitCard: 'all' } : { creditCard: 'all' },
-      visual: { style: { theme: 'dark' } }
+      visual: {
+        hideFormTitle: true,
+        style: {
+          theme: 'dark',
+          customVariables: {
+            formBackgroundColor: '#09090b',
+            inputBackgroundColor: '#18181b',
+            baseColor: '#ffffff',
+            buttonTextColor: '#000000',
+            textPrimaryColor: '#ffffff',
+            textSecondaryColor: '#a1a1aa',
+            outlinePrimaryColor: '#ffffff',
+            outlineSecondaryColor: '#3f3f46',
+            inputFocusedBorderColor: '#ffffff',
+            errorColor: '#f87171',
+            borderRadiusMedium: '12px',
+            borderRadiusLarge: '16px',
+            borderRadiusFull: '999px',
+            formPadding: '4px'
+          }
+        }
+      }
     },
     callbacks: {
       onReady: () => {},
